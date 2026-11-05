@@ -1,0 +1,18 @@
+subscription_id = "00000000-0000-0000-0000-000000000000"
+
+project     = "iot"
+environment = "dev"
+location    = "eastus"
+
+# Leave false on the first apply. Flip to true only once you have confirmed a
+# Databricks workspace can deploy on this subscription.
+deploy_databricks = false
+databricks_sku    = "trial"
+
+eventhub_name           = "vehicle-telemetry"
+eventhub_partitions     = 4
+eventhub_retention_days = 3
+
+budget_amount       = 100
+budget_start_date   = "2026-11-01T00:00:00Z"
+budget_alert_emails = ["you@example.com"]
