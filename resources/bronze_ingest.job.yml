@@ -1,0 +1,30 @@
+resources:
+  jobs:
+    bronze_ingest:
+      name: bronze_ingest
+      max_concurrent_runs: 1
+
+      tasks:
+        - task_key: ingest
+          job_cluster_key: single_node
+          notebook_task:
+            notebook_path: ../notebooks/01_bronze_ingest.py
+            base_parameters:
+              catalog: ${var.catalog}
+              secret_scope: ${var.secret_scope}
+              secret_key: ${var.eventhub_secret_key}
+              max_offsets_per_trigger: "10000"
+
+      job_clusters:
+        - job_cluster_key: single_node
+          new_cluster:
+            spark_version: ${var.spark_version}
+            node_type_id: ${var.node_type}
+            num_workers: 0
+            data_security_mode: SINGLE_USER
+            runtime_engine: STANDARD
+            spark_conf:
+              spark.master: "local[*, 4]"
+              spark.databricks.cluster.profile: singleNode
+            custom_tags:
+              ResourceClass: SingleNode

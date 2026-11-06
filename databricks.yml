@@ -1,0 +1,41 @@
+bundle:
+  name: iot-telemetry-lakehouse
+
+include:
+  - resources/*.yml
+
+sync:
+  exclude:
+    - infra/**
+    - docs/**
+
+variables:
+  catalog:
+    description: Unity Catalog catalog for this environment.
+  secret_scope:
+    description: Databricks secret scope holding Event Hubs connection strings.
+    default: iot
+  eventhub_secret_key:
+    description: Secret holding the listen-only Event Hubs connection string for this environment.
+  spark_version:
+    description: Databricks runtime for job clusters. List options with `databricks clusters spark-versions`.
+    default: 17.3.x-scala2.13
+  node_type:
+    description: Job cluster VM size. Must fit the subscription's 4-vCPU family quota.
+    default: Standard_D4ds_v4
+
+targets:
+  dev:
+    mode: development
+    default: true
+    variables:
+      catalog: iot_dev
+      eventhub_secret_key: eventhub-listen-conn
+
+  prod:
+    mode: production
+    workspace:
+      root_path: /Workspace/Shared/.bundle/${bundle.name}/${bundle.target}
+    variables:
+      catalog: iot_prod
+      eventhub_secret_key: eventhub-listen-conn-prod
