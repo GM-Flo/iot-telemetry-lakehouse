@@ -1,0 +1,9 @@
+threshold_name,value,unit,description
+engine_temperature_warning,105,celsius,Engine temperature above this is overheating
+engine_temperature_critical,115,celsius,Engine temperature above this needs immediate attention
+minimum_oil_pressure_running,150,kpa,Oil pressure below this while the engine runs is a fault
+minimum_coolant_pressure_running,70,kpa,Coolant pressure below this while the engine runs is a fault
+minimum_battery_voltage,12.0,volts,Battery voltage below this is a weak battery
+speeding_limit,120,kph,Speed above this counts as speeding
+minimum_idle_duration,120,seconds,Engine on and stationary for at least this long counts as idling
+device_silent_after,15,minutes,No message from a device for this long marks it silent

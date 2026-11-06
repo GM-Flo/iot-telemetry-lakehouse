@@ -1,0 +1,7 @@
+code,description,severity
+P0128,Coolant thermostat below regulating temperature,high
+P0300,Random or multiple cylinder misfire,high
+P0420,Catalyst system efficiency below threshold,medium
+P0171,"System too lean, bank 1",medium
+P0442,"Evaporative emission system leak, small",low
+P0562,System voltage low,medium
