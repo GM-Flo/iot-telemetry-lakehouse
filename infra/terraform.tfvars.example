@@ -4,8 +4,6 @@ project     = "iot"
 environment = "dev"
 location    = "uaenorth"
 
-# Leave false on the first apply. Flip to true only once you have confirmed a
-# Databricks workspace can deploy on this subscription.
 deploy_databricks = true
 databricks_sku    = "premium"
 
@@ -15,4 +13,4 @@ eventhub_retention_days = 3
 
 budget_amount       = 100
 budget_start_date   = "2026-11-01T00:00:00Z"
-budget_alert_emails = ["maliksaifrabbani@gmail.com"]
+budget_alert_emails = ["you@example.com"]
