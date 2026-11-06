@@ -26,30 +26,25 @@ output "kafka_bootstrap_servers" {
   value       = "${azurerm_eventhub_namespace.main.name}.servicebus.windows.net:9093"
 }
 
-output "eventhub_name" {
-  description = "Event Hub name, used as the Kafka topic in subscribe."
-  value       = azurerm_eventhub.telemetry.name
-}
-
-output "consumer_group" {
-  description = "Dedicated consumer group for the bronze stream."
-  value       = azurerm_eventhub_consumer_group.bronze.name
+output "eventhub_names" {
+  description = "Event Hub (Kafka topic) per data environment."
+  value       = { for env, hub in azurerm_eventhub.telemetry : env => hub.name }
 }
 
 output "catalog_name" {
-  description = "Unity Catalog name this environment expects."
+  description = "Unity Catalog name for the platform's default environment."
   value       = local.catalog_name
 }
 
-output "producer_connection_string" {
-  description = "Send-only connection string for the local producer. Export as EVENTHUB_CONN_STR."
-  value       = azurerm_eventhub_authorization_rule.producer.primary_connection_string
+output "producer_connection_strings" {
+  description = "Send-only connection string per environment, for the producer. Read one with: terraform output -json producer_connection_strings"
+  value       = { for env, rule in azurerm_eventhub_authorization_rule.producer : env => rule.primary_connection_string }
   sensitive   = true
 }
 
-output "consumer_connection_string" {
-  description = "Listen-only connection string for Databricks. Put this in a secret scope, never in a notebook."
-  value       = azurerm_eventhub_authorization_rule.consumer.primary_connection_string
+output "consumer_connection_strings" {
+  description = "Listen-only connection string per environment, for Databricks secrets. Never put these in a notebook."
+  value       = { for env, rule in azurerm_eventhub_authorization_rule.consumer : env => rule.primary_connection_string }
   sensitive   = true
 }
 

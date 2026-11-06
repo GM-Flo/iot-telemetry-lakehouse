@@ -1,9 +1,10 @@
 # Databricks notebook source
 # MAGIC %md
-# MAGIC # 01 · Bronze ingest
+# MAGIC # 01 · Bronze: ingest vendor messages
 # MAGIC
 # MAGIC Reads the Event Hubs Kafka endpoint and appends every message, unparsed, to
-# MAGIC `<catalog>.bronze.telemetry_raw`.
+# MAGIC `<catalog>.bronze.raw_telemetry_messages`. Messages from all four vendors arrive
+# MAGIC wrapped in the ingestion gateway envelope; bronze stores them as received.
 # MAGIC
 # MAGIC Runs with `availableNow`: it processes everything waiting since the last run, then
 # MAGIC stops. The checkpoint records which offsets were committed, so each run picks up
@@ -25,7 +26,7 @@ from src.iot.transforms import to_bronze  # noqa: E402
 
 dbutils.widgets.text("catalog", "iot_dev", "Catalog")
 dbutils.widgets.text("secret_scope", "iot", "Secret scope")
-dbutils.widgets.text("secret_key", "eventhub-listen-conn", "Secret key")
+dbutils.widgets.text("secret_key", "eventhub-listen-conn-dev", "Secret key")
 dbutils.widgets.text("max_offsets_per_trigger", "10000", "Max offsets per batch")
 
 catalog = dbutils.widgets.get("catalog")
@@ -52,7 +53,7 @@ query = (
     .writeStream.format("delta")
     .option("checkpointLocation", paths["checkpoint"])
     .trigger(availableNow=True)
-    .queryName("bronze_ingest")
+    .queryName("bronze_ingest_vendor_messages")
     .toTable(paths["table"])
 )
 query.awaitTermination()

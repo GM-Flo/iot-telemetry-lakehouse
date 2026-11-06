@@ -91,12 +91,12 @@ def to_bronze(df: DataFrame) -> DataFrame:
     """
     return df.select(
         F.col("value").cast("string").alias("raw_payload"),
-        F.col("key").cast("string").alias("message_key"),
-        F.col("topic").alias("topic"),
+        F.col("key").cast("string").alias("partition_key"),
+        F.col("topic").alias("source_topic"),
         F.col("partition").alias("kafka_partition"),
         F.col("offset").alias("kafka_offset"),
-        F.col("timestamp").alias("eh_enqueued_at"),
-        F.current_timestamp().alias("_ingested_at"),
+        F.col("timestamp").alias("eventhub_enqueued_at"),
+        F.current_timestamp().alias("ingested_at"),
     )
 
 
@@ -138,11 +138,11 @@ def split_quarantine(df: DataFrame) -> tuple[DataFrame, DataFrame]:
     quarantined = df.filter(F.col("_parse_error").isNotNull()).select(
         F.col("raw_payload"),
         F.col("_parse_error").alias("quarantine_reason"),
-        F.col("topic"),
+        F.col("source_topic"),
         F.col("kafka_partition"),
         F.col("kafka_offset"),
-        F.col("eh_enqueued_at"),
-        F.col("_ingested_at"),
+        F.col("eventhub_enqueued_at"),
+        F.col("ingested_at"),
         F.current_timestamp().alias("_quarantined_at"),
     )
 
@@ -182,24 +182,24 @@ def to_silver(df: DataFrame) -> DataFrame:
         F.col("_parsed.dtc_code").alias("dtc_code"),
         F.col("kafka_partition"),
         F.col("kafka_offset"),
-        F.col("eh_enqueued_at"),
-        F.col("_ingested_at"),
+        F.col("eventhub_enqueued_at"),
+        F.col("ingested_at"),
     ).withColumn(
         "event_date", F.to_date(F.col("event_ts"))
     ).withColumn(
         # Producer-side lateness: how long after the event occurred was it
         # transmitted. Measured against transmission time, not processing time,
-        # so the flag is replay-invariant: comparing to _ingested_at would mark
+        # so the flag is replay-invariant: comparing to ingested_at would mark
         # every row of a historical backfill as late, which is useless.
         # emitted_at is the producer's own claim and survives a file replay;
-        # eh_enqueued_at is the broker's and is trusted when present.
+        # eventhub_enqueued_at is the broker's and is trusted when present.
         "event_lag_seconds",
-        F.unix_timestamp(F.coalesce(F.col("eh_enqueued_at"), F.col("emitted_at")))
+        F.unix_timestamp(F.coalesce(F.col("eventhub_enqueued_at"), F.col("emitted_at")))
         - F.unix_timestamp(F.col("event_ts")),
     ).withColumn(
         # Pipeline-side lag: how long the row sat before we processed it.
         "ingest_lag_seconds",
-        F.unix_timestamp(F.col("_ingested_at")) - F.unix_timestamp(F.col("eh_enqueued_at")),
+        F.unix_timestamp(F.col("ingested_at")) - F.unix_timestamp(F.col("eventhub_enqueued_at")),
     ).withColumn(
         "is_late_arrival", F.col("event_lag_seconds") > F.lit(60)
     )

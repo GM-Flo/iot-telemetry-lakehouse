@@ -1,19 +1,24 @@
-"""Stream simulated vehicle telemetry to Azure Event Hubs.
+"""Stream simulated multi-vendor vehicle telemetry to Azure Event Hubs.
+
+Four telematics vendors, nine fleet-company clients, one message format per
+vendor, every message wrapped in the ingestion gateway envelope.
+
+Profiles:
+  dev   one client per vendor (24 vehicles), 15 s interval: small, sporadic
+  prod  every client (44 vehicles), 5 s interval: full fleet, continuous
 
 Modes:
-  live      continuous emission at --interval, intended to run for days
-  backfill  dense historical burst, so gold-layer windows have shape even if
-            live uptime is patchy
-  dry-run   print to stdout, no Azure connection required
+  live      continuous emission, until Ctrl+C
+  backfill  dense historical burst, so gold windows have shape immediately
 
-Partition key is vehicle_id, which preserves per-vehicle ordering inside a
-partition and spreads the fleet evenly across them.
+The target Event Hub is read from the connection string's EntityPath, so the
+same command sends to dev or prod depending only on which string is loaded.
 
 Usage:
-  export EVENTHUB_CONN_STR="$(terraform -chdir=infra output -raw producer_connection_string)"
-  python src/producer/produce.py --mode live --fleet-size 25 --interval 5
-  python src/producer/produce.py --mode backfill --backfill-hours 6
-  python src/producer/produce.py --dry-run --fleet-size 3
+  python src/producer/produce.py --env dev
+  python src/producer/produce.py --env prod --mode backfill --backfill-hours 6
+  python src/producer/produce.py --env dev --dry-run
+  python src/producer/produce.py --env prod --export-registry fleet_registry.json
 """
 
 from __future__ import annotations
@@ -30,9 +35,11 @@ import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from fleet import Fleet  # noqa: E402
+from src.producer.fleet import Fleet  # noqa: E402
+from src.producer.registry import select_clients  # noqa: E402
+from src.producer.vendors import Gateway  # noqa: E402
 
 try:
     from azure.eventhub import EventData, EventHubProducerClient
@@ -45,6 +52,11 @@ except ImportError:
     EventHubError = Exception
 
 LOG = logging.getLogger("producer")
+
+PROFILES = {
+    "dev": {"clients_per_vendor": 1, "interval": 15.0},
+    "prod": {"clients_per_vendor": None, "interval": 5.0},
+}
 
 MAX_BACKOFF_SECONDS = 60.0
 SHUTDOWN = False
@@ -59,14 +71,12 @@ def _handle_signal(signum, _frame) -> None:
 class TelemetrySink:
     """Event Hubs sender with reconnect, or a stdout sink in dry-run mode.
 
-    Accepts (partition_key, body) pairs where body is already a string. Sending
-    pre-serialized bodies is what lets deliberately malformed payloads reach the
-    hub intact instead of being re-serialized into valid JSON.
+    Accepts (partition_key, body) pairs where body is already a string, so
+    deliberately malformed payloads reach the hub intact.
     """
 
-    def __init__(self, conn_str: str | None, eventhub_name: str, dry_run: bool) -> None:
+    def __init__(self, conn_str: str | None, dry_run: bool) -> None:
         self.conn_str = conn_str
-        self.eventhub_name = eventhub_name
         self.dry_run = dry_run
         self._client = None
         self.sent = 0
@@ -74,10 +84,8 @@ class TelemetrySink:
 
     def _connect(self):
         if self._client is None:
-            self._client = EventHubProducerClient.from_connection_string(
-                conn_str=self.conn_str, eventhub_name=self.eventhub_name
-            )
-            LOG.info("connected to event hub %s", self.eventhub_name)
+            self._client = EventHubProducerClient.from_connection_string(conn_str=self.conn_str)
+            LOG.info("connected to event hub %s", self._client.eventhub_name)
         return self._client
 
     def _reset(self) -> None:
@@ -87,6 +95,9 @@ class TelemetrySink:
         self._client = None
 
     def send(self, items: list[tuple[str, str]]) -> None:
+        if not items:
+            return
+
         if self.dry_run:
             for _, body in items:
                 print(body)
@@ -113,10 +124,8 @@ class TelemetrySink:
                 if SHUTDOWN:
                     LOG.warning("dropping batch during shutdown: %s", type(exc).__name__)
                     return
-                LOG.warning(
-                    "send failed (%s: %s), reconnecting in %.0fs",
-                    type(exc).__name__, exc, backoff,
-                )
+                LOG.warning("send failed (%s: %s), reconnecting in %.0fs",
+                            type(exc).__name__, exc, backoff)
                 self._reset()
                 time.sleep(backoff)
                 backoff = min(MAX_BACKOFF_SECONDS, backoff * 2)
@@ -125,137 +134,151 @@ class TelemetrySink:
         self._reset()
 
 
-def corrupt(event: dict, rng: random.Random) -> str:
-    """Return a deliberately malformed payload.
+def _first_numeric_path(node, path=()):
+    """Path to the first numeric leaf in a nested payload, for type corruption."""
+    if isinstance(node, dict):
+        for key, value in node.items():
+            found = _first_numeric_path(value, (*path, key))
+            if found:
+                return found
+    elif isinstance(node, list) and node:
+        return _first_numeric_path(node[0], (*path, 0))
+    elif isinstance(node, (int, float)) and not isinstance(node, bool):
+        return path
+    return None
 
-    Silver routes rows that fail from_json into a quarantine table. Without
-    malformed input that table stays empty, so a small share of traffic is
-    corrupted on purpose, in several distinct ways.
-    """
-    mode = rng.choice(["truncated", "bad_type", "missing_vin", "not_json", "null_fields"])
-    payload = dict(event)
+
+def corrupt(envelope: dict, rng: random.Random) -> str:
+    """Return a deliberately malformed message, in one of several realistic ways."""
+    mode = rng.choice(["truncated", "not_json", "missing_payload", "unknown_vendor", "bad_type"])
+    message = json.loads(json.dumps(envelope))
 
     if mode == "truncated":
-        return json.dumps(payload)[: rng.randint(20, 60)]
-    if mode == "bad_type":
-        payload["engine_temp_c"] = "ninety-four"
-        payload["engine_rpm"] = "idle"
-        return json.dumps(payload)
-    if mode == "missing_vin":
-        payload.pop("vin", None)
-        return json.dumps(payload)
+        text = json.dumps(message)
+        return text[: rng.randint(20, max(21, len(text) // 2))]
     if mode == "not_json":
-        return f"vin={payload.get('vin')};temp={payload.get('engine_temp_c')}"
+        return f"vendor={message['vendor_id']};id={message['message_id']}"
+    if mode == "missing_payload":
+        message.pop("payload", None)
+        return json.dumps(message)
+    if mode == "unknown_vendor":
+        message["vendor_id"] = "zzz"
+        message["contract"] = "zzz.telemetry.v1"
+        return json.dumps(message)
 
-    payload["event_ts"] = None
-    payload["vin"] = None
-    return json.dumps(payload)
+    path = _first_numeric_path(message["payload"])
+    if path:
+        target = message["payload"]
+        for step in path[:-1]:
+            target = target[step]
+        target[path[-1]] = "n/a"
+    return json.dumps(message)
 
 
-def build_batch(
+def build_items(
     fleet: Fleet,
+    gateway: Gateway,
     now: datetime,
     late_fraction: float,
     malformed_fraction: float,
     rng: random.Random,
 ) -> list[tuple[str, str]]:
+    readings = fleet.readings(now=now, late_fraction=late_fraction)
     items: list[tuple[str, str]] = []
 
-    for reading in fleet.readings(now=now, late_fraction=late_fraction):
-        key = reading["vehicle_id"]
+    for key, envelope in gateway.messages(readings, received_at=now):
         if rng.random() < malformed_fraction:
-            items.append((key, corrupt(reading, rng)))
+            items.append((key, corrupt(envelope, rng)))
         else:
-            items.append((key, json.dumps(reading)))
+            items.append((key, json.dumps(envelope)))
 
     return items
 
 
-def run_live(sink: TelemetrySink, fleet: Fleet, args, rng: random.Random) -> None:
-    LOG.info(
-        "live mode: %d vehicles, %.1fs interval, %d degrading (%s)",
-        len(fleet.vehicles),
-        args.interval,
-        len(fleet.degrading_ids),
-        ", ".join(fleet.degrading_ids[:5]) or "none",
-    )
+def describe(fleet: Fleet, args) -> None:
+    LOG.info("[%s] %d clients, %d vehicles, %d transmitting devices, interval %.0fs",
+             args.env, len(fleet.clients), len(fleet.vehicles),
+             len(fleet.transmitting_devices), args.interval)
+    LOG.info("[%s] %d registered drivers", args.env, len(fleet.drivers))
+    LOG.info("[%s] overheating by design: %s", args.env, ", ".join(fleet.degrading_ids))
+    LOG.info("[%s] after-hours misuse by design: %s", args.env, ", ".join(fleet.misuse_prone_drivers))
+    for vehicle_id, issue in fleet.integration_issues.items():
+        LOG.info("[%s] integration fault by design: %s -> %s", args.env, vehicle_id, issue)
+
+
+def run_live(sink, fleet, gateway, args, rng) -> None:
+    describe(fleet, args)
 
     started = time.monotonic()
-    report_every = max(1, len(fleet.vehicles) * 20)
     last_report = 0
 
     while not SHUTDOWN:
         loop_start = time.monotonic()
 
-        fleet.advance(args.interval)
-        sink.send(build_batch(
-            fleet, datetime.now(timezone.utc),
-            args.late_fraction, args.malformed_fraction, rng,
-        ))
+        now = datetime.now(timezone.utc)
+        fleet.advance(args.interval, now=now)
+        sink.send(build_items(fleet, gateway, now,
+                              args.late_fraction, args.malformed_fraction, rng))
 
-        if sink.sent - last_report >= report_every:
+        if sink.sent - last_report >= 500:
             last_report = sink.sent
-            LOG.info(
-                "sent=%d failed=%d uptime=%.1fmin",
-                sink.sent, sink.failed, (time.monotonic() - started) / 60,
-            )
+            LOG.info("sent=%d failed=%d uptime=%.1fmin",
+                     sink.sent, sink.failed, (time.monotonic() - started) / 60)
 
         elapsed = time.monotonic() - loop_start
         if elapsed < args.interval and not SHUTDOWN:
             time.sleep(args.interval - elapsed)
 
 
-def run_backfill(sink: TelemetrySink, fleet: Fleet, args, rng: random.Random) -> None:
+def run_backfill(sink, fleet, gateway, args, rng) -> None:
     step = args.backfill_interval
     ticks = int((args.backfill_hours * 3600) / step)
     start = datetime.now(timezone.utc) - timedelta(hours=args.backfill_hours)
 
-    LOG.info(
-        "backfill: %.1fh at %.0fs resolution = %d ticks, ~%d events",
-        args.backfill_hours, step, ticks, ticks * len(fleet.vehicles),
-    )
+    LOG.info("backfill: %.1fh at %.0fs resolution, %d ticks", args.backfill_hours, step, ticks)
+    describe(fleet, args)
 
     for tick in range(ticks):
         if SHUTDOWN:
             break
-
-        fleet.advance(step)
-        sink.send(build_batch(
-            fleet, start + timedelta(seconds=tick * step),
-            args.late_fraction, args.malformed_fraction, rng,
-        ))
-
-        if tick and tick % 50 == 0:
+        now = start + timedelta(seconds=tick * step)
+        fleet.advance(step, now=now)
+        sink.send(build_items(fleet, gateway, now,
+                              args.late_fraction, args.malformed_fraction, rng))
+        if tick and tick % 100 == 0:
             LOG.info("backfill %d/%d ticks, sent=%d", tick, ticks, sink.sent)
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Vehicle telemetry producer")
+    parser = argparse.ArgumentParser(description="Multi-vendor vehicle telemetry producer")
 
+    parser.add_argument("--env", choices=sorted(PROFILES), default="dev",
+                        help="profile: fleet size and default interval")
     parser.add_argument("--mode", choices=["live", "backfill"], default="live")
     parser.add_argument("--dry-run", action="store_true",
-                        help="print to stdout instead of sending; needs no Azure credentials")
+                        help="print messages instead of sending; needs no Azure credentials")
+    parser.add_argument("--export-registry", metavar="PATH",
+                        help="write reference data (vendors, clients, regions, vehicles, "
+                             "drivers, device assignments, fuel prices, fault codes) as JSON, then exit")
+    parser.add_argument("--include-late-registrations", action="store_true",
+                        help="with --export-registry: include devices that were registered "
+                             "after their data started arriving")
 
-    parser.add_argument("--fleet-size", type=int, default=25)
-    parser.add_argument("--seed", type=int, default=42,
-                        help="set to -1 for a non-deterministic fleet")
-    parser.add_argument("--interval", type=float, default=5.0,
-                        help="seconds between emissions in live mode")
-
+    parser.add_argument("--seed", type=int, default=42, help="-1 for a non-deterministic fleet")
+    parser.add_argument("--interval", type=float, help="override the profile's live interval")
     parser.add_argument("--backfill-hours", type=float, default=6.0)
-    parser.add_argument("--backfill-interval", type=float, default=30.0,
-                        help="simulated seconds between historical readings")
-
-    parser.add_argument("--late-fraction", type=float, default=0.05,
-                        help="share of events timestamped in the past")
-    parser.add_argument("--malformed-fraction", type=float, default=0.01,
-                        help="share of events emitted as unparseable payloads")
-
-    parser.add_argument("--eventhub-name",
-                        default=os.environ.get("EVENTHUB_NAME", "vehicle-telemetry"))
+    parser.add_argument("--backfill-interval", type=float, default=30.0)
+    parser.add_argument("--late-fraction", type=float, default=0.05)
+    parser.add_argument("--malformed-fraction", type=float, default=0.01)
+    parser.add_argument("--glitch-fraction", type=float, default=0.003,
+                        help="share of readings with a sensor or clock fault")
+    parser.add_argument("--ats-batch-size", type=int, default=3)
     parser.add_argument("--log-level", default="INFO")
 
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    if args.interval is None:
+        args.interval = PROFILES[args.env]["interval"]
+    return args
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -265,33 +288,48 @@ def main(argv: list[str] | None = None) -> int:
         format="%(asctime)s %(levelname)-7s %(message)s",
         stream=sys.stderr,
     )
+    logging.getLogger("azure").setLevel(logging.WARNING)
+
+    seed = None if args.seed == -1 else args.seed
+    rng = random.Random(seed)
+    fleet = Fleet(select_clients(PROFILES[args.env]["clients_per_vendor"]),
+                  seed=seed, glitch_fraction=args.glitch_fraction)
+
+    if args.export_registry:
+        export = fleet.registry_export(include_late_registrations=args.include_late_registrations)
+        Path(args.export_registry).write_text(json.dumps(export, indent=2))
+        LOG.info("wrote %d vehicles and %d device assignments to %s",
+                 len(export["vehicles"]), len(export["device_vehicle_assignments"]),
+                 args.export_registry)
+        return 0
 
     signal.signal(signal.SIGINT, _handle_signal)
     signal.signal(signal.SIGTERM, _handle_signal)
 
     conn_str = os.environ.get("EVENTHUB_CONN_STR")
-
     if not args.dry_run:
-        if not AZURE_AVAILABLE:
-            LOG.error("azure-eventhub not installed. pip install -r src/producer/requirements.txt")
+        if not conn_str or "EntityPath=" not in conn_str:
+            LOG.error("EVENTHUB_CONN_STR must be a hub-level send connection string "
+                      "(it contains EntityPath=vehicle-telemetry-<env>).")
             return 2
-        if not conn_str:
-            LOG.error(
-                "EVENTHUB_CONN_STR is not set. Get it with:\n"
-                '  export EVENTHUB_CONN_STR="$(terraform -chdir=infra output -raw producer_connection_string)"'
-            )
+        # Guard against the classic mistake: dev data sent to the prod hub.
+        if not conn_str.rstrip(";").endswith(f"EntityPath=vehicle-telemetry-{args.env}"):
+            LOG.error("--env %s does not match the hub in EVENTHUB_CONN_STR. "
+                      "Load the %s connection string or change --env.", args.env, args.env)
+            return 2
+        if not AZURE_AVAILABLE:
+            LOG.error("azure-eventhub not installed: pip install -r src/producer/requirements.txt")
             return 2
 
-    seed = None if args.seed == -1 else args.seed
-    rng = random.Random(seed)
-    fleet = Fleet(size=args.fleet_size, seed=seed)
-    sink = TelemetrySink(conn_str, args.eventhub_name, args.dry_run)
+    gateway = Gateway(rng, ats_batch_size=args.ats_batch_size)
+    sink = TelemetrySink(conn_str, args.dry_run)
 
     try:
         if args.mode == "backfill":
-            run_backfill(sink, fleet, args, rng)
+            run_backfill(sink, fleet, gateway, args, rng)
         else:
-            run_live(sink, fleet, args, rng)
+            run_live(sink, fleet, gateway, args, rng)
+        sink.send([(k, json.dumps(e)) for k, e in gateway.flush(datetime.now(timezone.utc))])
     finally:
         sink.close()
         LOG.info("stopped. sent=%d failed=%d", sink.sent, sink.failed)

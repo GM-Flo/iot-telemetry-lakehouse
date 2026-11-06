@@ -85,7 +85,7 @@ class TestBronzePaths:
         dev = C.bronze_paths("iot_dev")
         prod = C.bronze_paths("iot_prod")
 
-        assert dev["table"] == "iot_dev.bronze.telemetry_raw"
-        assert dev["checkpoint"] == "/Volumes/iot_dev/bronze/checkpoints/telemetry_raw"
+        assert dev["table"] == "iot_dev.bronze.raw_telemetry_messages"
+        assert dev["checkpoint"] == "/Volumes/iot_dev/bronze/checkpoints/raw_telemetry_messages"
         assert prod["table"].startswith("iot_prod.")
         assert dev["checkpoint"] != prod["checkpoint"]

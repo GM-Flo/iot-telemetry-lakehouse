@@ -1,14 +1,19 @@
 resources:
   jobs:
-    bronze_ingest:
-      name: bronze_ingest
+    bronze_ingest_vendor_messages:
+      name: bronze_ingest_vendor_messages
+      description: Appends every Event Hubs message, unparsed, to bronze.raw_telemetry_messages.
       max_concurrent_runs: 1
+      tags:
+        project: iot-telemetry-lakehouse
+        layer: bronze
+        managed_by: databricks-bundle
 
       tasks:
-        - task_key: ingest
+        - task_key: ingest_vendor_messages
           job_cluster_key: single_node
           notebook_task:
-            notebook_path: ../notebooks/01_bronze_ingest.py
+            notebook_path: ../notebooks/01_bronze_ingest_vendor_messages.py
             base_parameters:
               catalog: ${var.catalog}
               secret_scope: ${var.secret_scope}

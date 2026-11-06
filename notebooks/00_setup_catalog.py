@@ -39,15 +39,26 @@ spark.sql(f"""
     MANAGED LOCATION '{abfss("volumes", catalog)}'
 """)
 
-for layer in ["bronze", "silver", "gold"]:
+# Medallion layers each get their own container; reference and operations are
+# small and share the volumes container under their own paths.
+schemas = {
+    "bronze": (abfss("bronze"), "Raw messages exactly as received from Event Hubs."),
+    "silver": (abfss("silver"), "Validated, normalized readings, plus quarantine tables."),
+    "gold": (abfss("gold"), "Business-ready facts, dimensions and aggregates."),
+    "reference": (abfss("volumes", f"{catalog}/reference"), "Lookup and master data."),
+    "operations": (abfss("volumes", f"{catalog}/operations"), "Pipeline run logs and audit tables."),
+}
+
+for schema, (location, comment) in schemas.items():
     spark.sql(f"""
-        CREATE SCHEMA IF NOT EXISTS {catalog}.{layer}
-        MANAGED LOCATION '{abfss(layer)}'
+        CREATE SCHEMA IF NOT EXISTS {catalog}.{schema}
+        MANAGED LOCATION '{location}'
+        COMMENT '{comment}'
     """)
 
-spark.sql(f"CREATE VOLUME IF NOT EXISTS {catalog}.bronze.checkpoints")
+for schema in ["bronze", "silver", "gold"]:
+    spark.sql(f"CREATE VOLUME IF NOT EXISTS {catalog}.{schema}.checkpoints")
 
 # COMMAND ----------
 
 display(spark.sql(f"SHOW SCHEMAS IN {catalog}"))
-display(spark.sql(f"SHOW VOLUMES IN {catalog}.bronze"))

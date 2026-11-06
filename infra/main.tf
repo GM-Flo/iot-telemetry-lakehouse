@@ -82,24 +82,24 @@ resource "azurerm_eventhub_namespace" "main" {
   tags = local.tags
 }
 
+# One hub per data environment. Hubs are free within a Standard namespace
+# (billing is per throughput unit), so dev and prod data are fully separated
+# at no extra cost.
 resource "azurerm_eventhub" "telemetry" {
-  name              = var.eventhub_name
+  for_each = toset(var.data_environments)
+
+  name              = "${var.eventhub_name}-${each.key}"
   namespace_id      = azurerm_eventhub_namespace.main.id
   partition_count   = var.eventhub_partitions
   message_retention = var.eventhub_retention_days
 }
 
-resource "azurerm_eventhub_consumer_group" "bronze" {
-  name                = "bronze-ingest"
-  namespace_name      = azurerm_eventhub_namespace.main.name
-  eventhub_name       = azurerm_eventhub.telemetry.name
-  resource_group_name = azurerm_resource_group.main.name
-}
-
 resource "azurerm_eventhub_authorization_rule" "producer" {
+  for_each = azurerm_eventhub.telemetry
+
   name                = "producer-send"
   namespace_name      = azurerm_eventhub_namespace.main.name
-  eventhub_name       = azurerm_eventhub.telemetry.name
+  eventhub_name       = each.value.name
   resource_group_name = azurerm_resource_group.main.name
 
   listen = false
@@ -108,9 +108,11 @@ resource "azurerm_eventhub_authorization_rule" "producer" {
 }
 
 resource "azurerm_eventhub_authorization_rule" "consumer" {
+  for_each = azurerm_eventhub.telemetry
+
   name                = "databricks-listen"
   namespace_name      = azurerm_eventhub_namespace.main.name
-  eventhub_name       = azurerm_eventhub.telemetry.name
+  eventhub_name       = each.value.name
   resource_group_name = azurerm_resource_group.main.name
 
   listen = true

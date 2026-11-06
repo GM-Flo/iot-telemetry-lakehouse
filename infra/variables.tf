@@ -62,9 +62,20 @@ variable "databricks_sku" {
 }
 
 variable "eventhub_name" {
-  description = "Event Hub (Kafka topic) name."
+  description = "Base Event Hub (Kafka topic) name. Each data environment gets <name>-<env>."
   type        = string
   default     = "vehicle-telemetry"
+}
+
+variable "data_environments" {
+  description = "Data environments that each get their own Event Hub and access policies."
+  type        = list(string)
+  default     = ["dev", "prod"]
+
+  validation {
+    condition     = alltrue([for e in var.data_environments : contains(["dev", "stg", "prod"], e)])
+    error_message = "data_environments may only contain dev, stg or prod."
+  }
 }
 
 variable "eventhub_partitions" {

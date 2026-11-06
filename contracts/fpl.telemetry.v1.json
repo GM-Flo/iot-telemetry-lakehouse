@@ -1,0 +1,128 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "fpl.telemetry.v1",
+  "title": "FleetPulse telemetry v1",
+  "description": "camelCase keys, imperial units (mph, degrees F, psi, miles), epoch-millisecond timestamps. One reading per message.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "deviceId",
+    "vin",
+    "accountId",
+    "driverFobId",
+    "timestamp",
+    "sentAt",
+    "ignition",
+    "speedMph",
+    "rpm",
+    "engineTempF",
+    "coolantPressurePsi",
+    "oilPressurePsi",
+    "batteryVolts",
+    "fuelPct",
+    "odometerMiles",
+    "lat",
+    "lng",
+    "heading",
+    "faultCodes",
+    "harshBrakeEvents",
+    "harshAccelEvents"
+  ],
+  "properties": {
+    "deviceId": {
+      "type": "string",
+      "pattern": "^FPL-[0-9A-F]{6}$"
+    },
+    "vin": {
+      "type": "string",
+      "pattern": "^[A-HJ-NPR-Z0-9]{17}$"
+    },
+    "accountId": {
+      "type": "string",
+      "pattern": "^C[0-9]{3}$"
+    },
+    "driverFobId": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^FOB-[0-9A-F]{8}$",
+      "description": "Driver key fob; null when no driver is logged in (engine off)"
+    },
+    "timestamp": {
+      "type": "integer",
+      "description": "Event time, epoch milliseconds UTC"
+    },
+    "sentAt": {
+      "type": "integer",
+      "description": "Transmission time, epoch milliseconds UTC"
+    },
+    "ignition": {
+      "enum": [
+        "ON",
+        "OFF"
+      ]
+    },
+    "speedMph": {
+      "type": "number",
+      "minimum": 0
+    },
+    "rpm": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "engineTempF": {
+      "type": "number"
+    },
+    "coolantPressurePsi": {
+      "type": "number"
+    },
+    "oilPressurePsi": {
+      "type": "number"
+    },
+    "batteryVolts": {
+      "type": "number"
+    },
+    "fuelPct": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 100
+    },
+    "odometerMiles": {
+      "type": "number",
+      "minimum": 0
+    },
+    "lat": {
+      "type": "number",
+      "minimum": -90,
+      "maximum": 90
+    },
+    "lng": {
+      "type": "number",
+      "minimum": -180,
+      "maximum": 180
+    },
+    "heading": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 360
+    },
+    "faultCodes": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^[PBCU][0-9]{4}$"
+      }
+    },
+    "harshBrakeEvents": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Harsh braking events since the previous reading"
+    },
+    "harshAccelEvents": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Harsh acceleration events since the previous reading"
+    }
+  }
+}

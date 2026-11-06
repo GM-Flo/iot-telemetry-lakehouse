@@ -131,7 +131,7 @@ class TestSilver:
             ingested_offset_seconds=None,
         ).collect()[0]
 
-        assert row["eh_enqueued_at"] is None
+        assert row["eventhub_enqueued_at"] is None
         assert row["event_lag_seconds"] == 600
         assert row["is_late_arrival"] is True
 
@@ -383,5 +383,5 @@ class TestBronzeContract:
 
         assert row["raw_payload"] == '{"vin":"AAA"}'
         assert row["kafka_offset"] == 42
-        assert row["_ingested_at"] is not None
+        assert row["ingested_at"] is not None
         assert "vin" not in bronze.columns

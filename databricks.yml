@@ -28,14 +28,20 @@ targets:
   dev:
     mode: development
     default: true
+    presets:
+      tags:
+        environment: dev
     variables:
       catalog: iot_dev
-      eventhub_secret_key: eventhub-listen-conn
+      eventhub_secret_key: eventhub-listen-conn-dev
 
   prod:
     mode: production
     workspace:
       root_path: /Workspace/Shared/.bundle/${bundle.name}/${bundle.target}
+    presets:
+      tags:
+        environment: prod
     variables:
       catalog: iot_prod
       eventhub_secret_key: eventhub-listen-conn-prod

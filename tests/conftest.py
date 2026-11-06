@@ -47,12 +47,12 @@ def spark() -> SparkSession:
 def _bronze_schema() -> StructType:
     return StructType([
         StructField("raw_payload", StringType()),
-        StructField("message_key", StringType()),
-        StructField("topic", StringType()),
+        StructField("partition_key", StringType()),
+        StructField("source_topic", StringType()),
         StructField("kafka_partition", IntegerType()),
         StructField("kafka_offset", LongType()),
-        StructField("eh_enqueued_at", TimestampType()),
-        StructField("_ingested_at", TimestampType()),
+        StructField("eventhub_enqueued_at", TimestampType()),
+        StructField("ingested_at", TimestampType()),
     ])
 
 
@@ -119,8 +119,8 @@ def make_bronze(spark):
         processed_offset_seconds: int | None = None,
     ):
         """
-        ingested_offset_seconds  -> eh_enqueued_at, when Event Hubs received it
-        processed_offset_seconds -> _ingested_at, when the pipeline read it
+        ingested_offset_seconds  -> eventhub_enqueued_at, when Event Hubs received it
+        processed_offset_seconds -> ingested_at, when the pipeline read it
                                     (defaults to the same instant; set it far
                                     ahead to simulate a historical replay)
         """

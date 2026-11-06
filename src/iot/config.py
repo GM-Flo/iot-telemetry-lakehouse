@@ -83,7 +83,7 @@ def kafka_source_options(
     return options
 
 
-def bronze_paths(catalog: str, table: str = "telemetry_raw") -> dict:
+def bronze_paths(catalog: str, table: str = "raw_telemetry_messages") -> dict:
     """Table name and checkpoint location for a bronze stream."""
     return {
         "table": f"{catalog}.bronze.{table}",

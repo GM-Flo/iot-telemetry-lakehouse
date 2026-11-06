@@ -1,0 +1,125 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "tmx.telemetry.v1",
+  "title": "TelemaxPro telemetry v1",
+  "description": "Flat JSON, metric units, ISO-8601 UTC timestamps. One reading per message.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "device_id",
+    "vin",
+    "account_id",
+    "driver_fob_id",
+    "event_ts",
+    "sent_ts",
+    "ignition_on",
+    "speed_kph",
+    "engine_rpm",
+    "engine_temp_c",
+    "coolant_pressure_kpa",
+    "oil_pressure_kpa",
+    "battery_voltage",
+    "fuel_level_pct",
+    "odometer_km",
+    "latitude",
+    "longitude",
+    "heading_deg",
+    "dtc_code",
+    "harsh_brake_count",
+    "harsh_accel_count"
+  ],
+  "properties": {
+    "device_id": {
+      "type": "string",
+      "pattern": "^TMX-[0-9A-F]{6}$"
+    },
+    "vin": {
+      "type": "string",
+      "pattern": "^[A-HJ-NPR-Z0-9]{17}$"
+    },
+    "account_id": {
+      "type": "string",
+      "pattern": "^C[0-9]{3}$"
+    },
+    "driver_fob_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^FOB-[0-9A-F]{8}$",
+      "description": "Driver key fob; null when no driver is logged in (engine off)"
+    },
+    "event_ts": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "sent_ts": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "ignition_on": {
+      "type": "boolean"
+    },
+    "speed_kph": {
+      "type": "number",
+      "minimum": 0
+    },
+    "engine_rpm": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "engine_temp_c": {
+      "type": "number"
+    },
+    "coolant_pressure_kpa": {
+      "type": "number"
+    },
+    "oil_pressure_kpa": {
+      "type": "number"
+    },
+    "battery_voltage": {
+      "type": "number"
+    },
+    "fuel_level_pct": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 100
+    },
+    "odometer_km": {
+      "type": "number",
+      "minimum": 0
+    },
+    "latitude": {
+      "type": "number",
+      "minimum": -90,
+      "maximum": 90
+    },
+    "longitude": {
+      "type": "number",
+      "minimum": -180,
+      "maximum": 180
+    },
+    "heading_deg": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 360
+    },
+    "dtc_code": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^[PBCU][0-9]{4}$"
+    },
+    "harsh_brake_count": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Harsh braking events since the previous reading"
+    },
+    "harsh_accel_count": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Harsh acceleration events since the previous reading"
+    }
+  }
+}
