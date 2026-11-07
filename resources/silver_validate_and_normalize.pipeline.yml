@@ -31,4 +31,8 @@ resources:
 
       libraries:
         - file:
+            path: ../pipelines/silver/reference.py
+        - file:
             path: ../pipelines/silver/master_data.py
+        - file:
+            path: ../pipelines/silver/telemetry.py
