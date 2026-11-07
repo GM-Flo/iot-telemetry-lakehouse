@@ -10,17 +10,21 @@ Built one stage at a time. So far:
   quarantine_invalid_values         readings that cannot be true (only that reading, not its message)
   matched_readings                  temporary view: readings checked against the registry at event time
   quarantine_registry_mismatches    readings the registry does not support
+  measurements_to_store             temporary view: readings that passed or only warned
+  vehicle_measurements              one row per real reading, deduplicated by AUTO CDC
 """
 
 import sys
 
 from pyspark import pipelines as dp
+from pyspark.sql import functions as F
 
 ROOT = spark.conf.get("bundle.sourcePath")
 sys.path.append(ROOT)
 
 from src.iot import reference as ref  # noqa: E402
 from src.iot.silver import matching as match  # noqa: E402
+from src.iot.silver import measurements as meas  # noqa: E402
 from src.iot.silver import normalize as norm  # noqa: E402
 from src.iot.silver import telemetry as tel  # noqa: E402
 from src.iot.silver import validity as val  # noqa: E402
@@ -97,3 +101,24 @@ def matched_readings():
 )
 def quarantine_registry_mismatches():
     return match.quarantine_registry_mismatches(spark.readStream.table("matched_readings"))
+
+
+@dp.temporary_view(comment="Matched readings that passed or only warned, ready to store.")
+def measurements_to_store():
+    return meas.to_store(spark.readStream.table("matched_readings"))
+
+
+dp.create_streaming_table(
+    name="vehicle_measurements",
+    comment="One validated, matched reading per device and event time. Duplicates and re-sends collapse into one row.",
+)
+
+# Upsert on the natural key: a duplicate overwrites its row instead of adding
+# one, however late it arrives. The copy received last wins.
+dp.create_auto_cdc_flow(
+    target="vehicle_measurements",
+    source="measurements_to_store",
+    keys=meas.MEASUREMENT_KEYS,
+    sequence_by=F.struct(*meas.SEQUENCE_COLUMNS),
+    stored_as_scd_type=1,
+)

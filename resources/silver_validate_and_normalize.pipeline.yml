@@ -10,9 +10,17 @@ resources:
       serverless: false
       continuous: false
 
+      # Lakeflow records every run here: flow progress, row counts, expectation
+      # results. operations.pipeline_runs is built from it.
+      event_log:
+        catalog: ${var.catalog}
+        schema: operations
+        name: silver_validate_and_normalize_event_log
+
       configuration:
         catalog: ${var.catalog}
         bundle.sourcePath: ${workspace.file_path}
+        event_log_name: silver_validate_and_normalize_event_log
         # Development runs otherwise keep the cluster alive for 2 hours.
         pipelines.clusterShutdown.delay: 60s
 
@@ -36,3 +44,5 @@ resources:
             path: ../pipelines/silver/master_data.py
         - file:
             path: ../pipelines/silver/telemetry.py
+        - file:
+            path: ../pipelines/silver/operations.py
