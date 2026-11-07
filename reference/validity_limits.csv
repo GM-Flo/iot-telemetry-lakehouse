@@ -1,0 +1,12 @@
+field,minimum,maximum,unit,reason
+speed_kph,0,250,kph,No fleet vehicle can exceed this; beyond it the speed sensor is faulty
+engine_rpm,0,8000,rpm,Above any engine's redline
+engine_temperature_celsius,-40,200,celsius,Sensor range; real overheating is far below this
+coolant_pressure_kpa,0,400,kpa,Above the rating of any cooling system
+oil_pressure_kpa,0,1000,kpa,Above any engine's oil pressure
+battery_voltage,0,30,volts,Vehicle electrical systems run at 12 or 24 volts
+fuel_level_percent,0,100,percent,A percentage
+odometer_km,0,3000000,km,Negative or beyond any vehicle's lifetime distance
+heading_degrees,0,360,degrees,A compass bearing
+harsh_brake_count,0,100,events,More than this between two readings means a faulty counter
+harsh_accel_count,0,100,events,More than this between two readings means a faulty counter

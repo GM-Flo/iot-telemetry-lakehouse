@@ -349,8 +349,9 @@ class Vehicle:
                 0.85 * self.engine_temp_c + 0.15 * thermal_target + rng.gauss(0, 0.8)),
             1,
         )
+        # A cold engine sits near zero gauge pressure; it never goes below it.
         self.coolant_pressure_kpa = round(
-            95.0 + (self.engine_temp_c - NOMINAL_ENGINE_TEMP_C) * 1.8 + rng.gauss(0, 3), 1
+            max(0.0, 95.0 + (self.engine_temp_c - NOMINAL_ENGINE_TEMP_C) * 1.8 + rng.gauss(0, 3)), 1
         )
         self.oil_pressure_kpa = round(200.0 + (self.rpm / 5200.0) * 250.0 + rng.gauss(0, 12), 1)
         self.battery_voltage = round(rng.uniform(13.8, 14.4), 2)

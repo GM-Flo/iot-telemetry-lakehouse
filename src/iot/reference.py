@@ -26,6 +26,9 @@ REFERENCE_TABLES: dict[str, dict[str, str]] = {
         "vendor_id": "string", "contract": "string", "version": "int",
         "status": "string", "supported_from": "date", "notes": "string",
     },
+    "validity_limits": {
+        "field": "string", "minimum": "double", "maximum": "double", "unit": "string", "reason": "string",
+    },
     "vendor_field_mappings": {
         "vendor_id": "string", "contract_version": "int", "target_field": "string",
         "source_path": "string", "conversion": "string",
@@ -60,3 +63,28 @@ def known_vendors(reference_dir: str | Path) -> list[str]:
     """Vendors with at least one contract we currently accept."""
     rows = read_rows(Path(reference_dir) / "vendor_contract_versions.csv")
     return sorted({r["vendor_id"] for r in rows if r["status"] in ACCEPTED_CONTRACT_STATUSES})
+
+
+def accepted_contracts(reference_dir: str | Path) -> dict[str, str]:
+    """Contract name -> the vendor allowed to send it, for contracts we currently accept."""
+    rows = read_rows(Path(reference_dir) / "vendor_contract_versions.csv")
+    return {r["contract"]: r["vendor_id"] for r in rows if r["status"] in ACCEPTED_CONTRACT_STATUSES}
+
+
+def field_mappings_by_contract(reference_dir: str | Path) -> dict[str, list[dict[str, str]]]:
+    """For each accepted contract, the rows of vendor_field_mappings.csv that apply to it."""
+    versions = read_rows(Path(reference_dir) / "vendor_contract_versions.csv")
+    mappings = read_rows(Path(reference_dir) / "vendor_field_mappings.csv")
+    return {
+        v["contract"]: [
+            m for m in mappings if m["vendor_id"] == v["vendor_id"] and m["contract_version"] == v["version"]
+        ]
+        for v in versions
+        if v["status"] in ACCEPTED_CONTRACT_STATUSES
+    }
+
+
+def validity_limits(reference_dir: str | Path) -> dict[str, tuple[float, float]]:
+    """Standard field -> (minimum, maximum) a working sensor can report."""
+    rows = read_rows(Path(reference_dir) / "validity_limits.csv")
+    return {r["field"]: (float(r["minimum"]), float(r["maximum"])) for r in rows}

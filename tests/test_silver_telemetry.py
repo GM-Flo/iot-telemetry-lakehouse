@@ -9,16 +9,28 @@ from __future__ import annotations
 import json
 import random
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 
-from src.iot.silver.telemetry import parse_envelope, quarantine_unparseable
+from src.iot import reference as ref
+from src.iot.silver.telemetry import (
+    QUARANTINE_COLUMNS,
+    check_contract,
+    load_contract_schemas,
+    parse_envelope,
+    quarantine_contract_violations,
+    quarantine_unparseable,
+)
 from src.producer.fleet import Fleet
 from src.producer.produce import corrupt
 from src.producer.registry import VENDORS, select_clients
 from src.producer.vendors import Gateway
 
 KNOWN_VENDORS = sorted(VENDORS)
+ROOT = Path(__file__).resolve().parents[1]
+ACCEPTED = ref.accepted_contracts(ROOT / "reference")
+SCHEMAS = load_contract_schemas(ROOT / "contracts", list(ACCEPTED))
 NOW = datetime(2026, 11, 6, 18, 0, tzinfo=timezone.utc)
 
 
@@ -151,6 +163,7 @@ class TestQuarantineUnparseable:
         assert row["raw_payload"] == "garbage"
         assert row["quarantine_stage"] == "parse"
         assert row["kafka_offset"] == 100
+        assert row["quarantine_detail"] is None
         assert row["quarantined_at"] is not None
         assert row["replayed"] is False
 
@@ -163,3 +176,104 @@ class TestQuarantineUnparseable:
         passed = parsed.filter("record_status = 'pass'").count()
         quarantined = quarantine_unparseable(parsed).count()
         assert passed + quarantined == len(raws)
+
+
+def contract_check(bronze_of, raws):
+    return check_contract(parse_envelope(bronze_of(raws), KNOWN_VENDORS), SCHEMAS, ACCEPTED)
+
+
+def with_payload_value(envelope, path, value):
+    broken = json.loads(json.dumps(envelope))
+    target = broken["payload"]
+    for step in path[:-1]:
+        target = target[step]
+    target[path[-1]] = value
+    return json.dumps(broken)
+
+
+class TestCheckContract:
+    def test_valid_messages_from_every_vendor_pass(self, bronze_of, envelopes):
+        rows = contract_check(bronze_of, [json.dumps(e) for e in envelopes]).collect()
+
+        assert {r["vendor_id"] for r in rows} == set(KNOWN_VENDORS)
+        assert all(r["record_status"] == "pass" for r in rows), [r["contract_detail"] for r in rows]
+
+    def test_only_rows_that_passed_parsing_are_checked(self, bronze_of, envelopes):
+        rows = contract_check(bronze_of, [json.dumps(envelopes[0]), "garbage"]).collect()
+        assert len(rows) == 1
+
+    def test_one_bad_reading_fails_the_whole_autosense_message(self, bronze_of, envelopes):
+        batch = next(e for e in envelopes if e["vendor_id"] == "ats" and len(e["payload"]["readings"]) > 1)
+        row = contract_check(bronze_of, [with_payload_value(batch, ["readings", 1, "spd"], "n/a")]).collect()[0]
+
+        assert row["record_status"] == "fail"
+        assert row["contract_error"] == "schema_violation"
+        assert row["contract_detail"].startswith("$.readings[1].spd")
+
+    def test_extra_field_breaks_the_contract(self, bronze_of, envelopes):
+        broken = json.loads(json.dumps(envelopes[0]))
+        broken["payload"]["surprise"] = 1
+        row = contract_check(bronze_of, [json.dumps(broken)]).collect()[0]
+
+        assert row["contract_error"] == "schema_violation"
+        assert "surprise" in row["contract_detail"]
+
+    def test_missing_required_field_breaks_the_contract(self, bronze_of, envelopes):
+        broken = json.loads(json.dumps(envelopes[0]))
+        field = next(iter(broken["payload"]))
+        del broken["payload"][field]
+        row = contract_check(bronze_of, [json.dumps(broken)]).collect()[0]
+
+        assert row["contract_error"] == "schema_violation"
+        assert field in row["contract_detail"]
+
+    @pytest.mark.parametrize("contract", ["tmx.telemetry.v9", None])
+    def test_contract_we_do_not_accept(self, bronze_of, envelopes, contract):
+        broken = {**envelopes[0], "contract": contract}
+        row = contract_check(bronze_of, [json.dumps(broken)]).collect()[0]
+        assert row["contract_error"] == "unsupported_contract"
+
+    def test_vendor_claiming_another_vendors_contract(self, bronze_of, envelopes):
+        tmx = next(e for e in envelopes if e["vendor_id"] == "tmx")
+        row = contract_check(bronze_of, [json.dumps({**tmx, "contract": "fpl.telemetry.v1"})]).collect()[0]
+
+        assert row["contract_error"] == "unsupported_contract"
+        assert row["contract_detail"] == "vendor tmx sent contract fpl.telemetry.v1"
+
+    def test_every_producer_corruption_is_now_caught(self, bronze_of, envelopes):
+        """Parse catches broken envelopes; the contract catches what hides inside them."""
+        rng = random.Random(5)
+        raws = [corrupt(e, rng) for e in envelopes]
+
+        assert contract_check(bronze_of, raws).filter("record_status = 'pass'").count() == 0
+
+
+class TestQuarantineContractViolations:
+    def test_quarantine_row_has_reason_and_detail(self, bronze_of, envelopes):
+        bad = with_payload_value(envelopes[0], [next(iter(envelopes[0]["payload"]))], 12345)
+        row = quarantine_contract_violations(contract_check(bronze_of, [bad])).collect()[0]
+
+        assert row["quarantine_stage"] == "contract"
+        assert row["quarantine_reason"] == "schema_violation"
+        assert row["quarantine_detail"].startswith("$.")
+        assert row["raw_payload"] == bad
+
+    def test_every_quarantine_table_has_the_same_columns(self, bronze_of):
+        parsed = parse_envelope(bronze_of(["garbage"]), KNOWN_VENDORS)
+        checked = check_contract(parsed, SCHEMAS, ACCEPTED)
+
+        assert quarantine_unparseable(parsed).columns == QUARANTINE_COLUMNS
+        assert quarantine_contract_violations(checked).columns == QUARANTINE_COLUMNS
+
+    def test_reconciliation_across_both_stages(self, bronze_of, envelopes):
+        """bronze == unparseable + contract violations + passed. Nothing disappears."""
+        rng = random.Random(8)
+        raws = [json.dumps(e) for e in envelopes] + [corrupt(e, rng) for e in envelopes[:30]]
+        parsed = parse_envelope(bronze_of(raws), KNOWN_VENDORS)
+        checked = check_contract(parsed, SCHEMAS, ACCEPTED)
+
+        unparseable = quarantine_unparseable(parsed).count()
+        violations = quarantine_contract_violations(checked).count()
+        passed = checked.filter("record_status = 'pass'").count()
+        assert violations > 0
+        assert unparseable + violations + passed == len(raws)

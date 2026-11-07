@@ -19,6 +19,7 @@ REFERENCE_DIR = f"{ROOT}/reference"
 DESCRIPTIONS = {
     "fault_codes": "Diagnostic trouble code meaning and severity.",
     "anomaly_thresholds": "Limits such as overheating temperature, held as data rather than code.",
+    "validity_limits": "Physical range of each sensor; values outside it are faults, not events.",
     "vendor_contract_versions": "Contract versions each vendor may send, and which is current.",
     "vendor_field_mappings": "Vendor field path to standard field, with the unit conversion to apply.",
 }

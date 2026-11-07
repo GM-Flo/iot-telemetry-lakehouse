@@ -434,6 +434,23 @@ class TestDrivers:
         assert after_hours
         assert {r["driver_fob_id"] for r in after_hours} <= misuse
 
+    def test_a_healthy_fleet_stays_within_physical_limits(self):
+        """Silver's validity limits flagged negative coolant pressure after cold starts.
+        Two days covers every cold start: overnight stops and shift changes."""
+        import csv
+
+        names = {"engine_temperature_celsius": "engine_temp_c", "fuel_level_percent": "fuel_level_pct",
+                 "heading_degrees": "heading_deg"}
+        limits_file = Path(__file__).resolve().parents[1] / "reference" / "validity_limits.csv"
+        with open(limits_file, newline="", encoding="utf-8") as handle:
+            limits = {r["field"]: (float(r["minimum"]), float(r["maximum"])) for r in csv.DictReader(handle)}
+
+        fleet = Fleet(select_clients(), seed=8, glitch_fraction=0)
+        for r in run_hours(fleet, 48, NOW, step=300):
+            for field, (low, high) in limits.items():
+                value = r[names.get(field, field)]
+                assert value is None or low <= value <= high, (field, value, r["vehicle_id"])
+
     def test_registry_exports_drivers_and_regions(self):
         registry = Fleet(select_clients(), seed=8).registry_export()
         assert len(registry["drivers"]) == sum(
