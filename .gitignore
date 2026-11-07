@@ -34,3 +34,4 @@ checkpoints/
 .DS_Store
 .idea/
 .vscode/
+fleet_registry_*.json

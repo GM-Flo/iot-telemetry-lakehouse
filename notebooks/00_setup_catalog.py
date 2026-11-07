@@ -59,6 +59,15 @@ for schema, (location, comment) in schemas.items():
 for schema in ["bronze", "silver", "gold"]:
     spark.sql(f"CREATE VOLUME IF NOT EXISTS {catalog}.{schema}.checkpoints")
 
+# Landing zone for file sources. External, so upstream systems can drop files straight
+# into ADLS. It sits outside the catalog's managed paths, which Unity Catalog requires.
+environment = catalog.removeprefix("iot_")
+spark.sql(f"""
+    CREATE EXTERNAL VOLUME IF NOT EXISTS {catalog}.bronze.landing
+    LOCATION '{abfss("volumes", f"landing/{environment}")}'
+    COMMENT 'Landing zone for file sources, such as daily registry snapshots.'
+""")
+
 # COMMAND ----------
 
 display(spark.sql(f"SHOW SCHEMAS IN {catalog}"))

@@ -1,0 +1,32 @@
+resources:
+  jobs:
+    bronze_ingest_registry_snapshots:
+      name: bronze_ingest_registry_snapshots
+      description: Appends each new registry file from the landing volume to bronze.raw_registry_snapshots.
+      max_concurrent_runs: 1
+      tags:
+        project: iot-telemetry-lakehouse
+        layer: bronze
+        managed_by: databricks-bundle
+
+      tasks:
+        - task_key: ingest_registry_snapshots
+          job_cluster_key: single_node
+          notebook_task:
+            notebook_path: ../notebooks/02_bronze_ingest_registry_snapshots.py
+            base_parameters:
+              catalog: ${var.catalog}
+
+      job_clusters:
+        - job_cluster_key: single_node
+          new_cluster:
+            spark_version: ${var.spark_version}
+            node_type_id: ${var.node_type}
+            num_workers: 0
+            data_security_mode: SINGLE_USER
+            runtime_engine: STANDARD
+            spark_conf:
+              spark.master: "local[*, 4]"
+              spark.databricks.cluster.profile: singleNode
+            custom_tags:
+              ResourceClass: SingleNode
