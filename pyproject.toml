@@ -24,5 +24,6 @@ ignore = ["E501"]
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["E402"]
 "src/producer/produce.py" = ["E402"]
-# Databricks injects spark, dbutils and display into every notebook.
+# Databricks injects spark, dbutils and display into every notebook and pipeline file.
 "notebooks/*" = ["F821", "E402"]
+"pipelines/*" = ["F821", "E402"]

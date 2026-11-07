@@ -1,0 +1,34 @@
+resources:
+  pipelines:
+    silver_validate_and_normalize:
+      name: silver_validate_and_normalize
+      catalog: ${var.catalog}
+      schema: silver
+      edition: ADVANCED
+      channel: CURRENT
+      photon: false
+      serverless: false
+      continuous: false
+
+      configuration:
+        catalog: ${var.catalog}
+        bundle.sourcePath: ${workspace.file_path}
+        # Development runs otherwise keep the cluster alive for 2 hours.
+        pipelines.clusterShutdown.delay: 60s
+
+      clusters:
+        - label: default
+          node_type_id: ${var.node_type}
+          num_workers: 0
+          spark_conf:
+            spark.master: "local[*, 4]"
+            spark.databricks.cluster.profile: singleNode
+          custom_tags:
+            ResourceClass: SingleNode
+            project: iot-telemetry-lakehouse
+            layer: silver
+            managed_by: databricks-bundle
+
+      libraries:
+        - file:
+            path: ../pipelines/silver/master_data.py
