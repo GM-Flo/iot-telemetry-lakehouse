@@ -96,5 +96,10 @@ def test_validity_limits_cover_only_numeric_standard_fields():
         assert low < high, field
 
 
-def test_thresholds_include_the_trip_rule():
-    assert ref.thresholds(REFERENCE_DIR)["minimum_stop_between_trips"] == 600
+def test_thresholds_include_the_event_rules():
+    thresholds = ref.thresholds(REFERENCE_DIR)
+    assert thresholds["minimum_stop_between_trips"] == 600
+    assert thresholds["minimum_speeding_duration"] == 240
+    assert thresholds["minimum_idle_duration"] == 120
+    assert thresholds["speeding_limit"] == 120
+    assert thresholds["minimum_refuel_increase"] == 5

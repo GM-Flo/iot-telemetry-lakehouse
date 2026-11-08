@@ -133,6 +133,17 @@ class TestContracts:
         drifted = {**payload, "tire_pressure_kpa": 220.0}
         assert not validator("tmx.telemetry.v1").is_valid(drifted)
 
+    def test_message_ids_differ_between_runs_with_the_same_seed(self):
+        """The seed repeats the fleet, never the ids: a second run must not reuse the first run's ids."""
+        def ids():
+            fleet = Fleet(select_clients(1), seed=42, glitch_fraction=0)
+            gateway = Gateway(random.Random(42))
+            fleet.advance(30, now=NOW)
+            return {e["message_id"] for _, e in gateway.messages(fleet.readings(now=NOW, late_fraction=0), NOW)}
+
+        first, second = ids(), ids()
+        assert first and not first & second
+
     def test_message_ids_unique(self, prod_messages):
         ids = [e["message_id"] for _, e in prod_messages]
         assert len(ids) == len(set(ids))

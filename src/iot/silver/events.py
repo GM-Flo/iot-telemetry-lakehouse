@@ -100,17 +100,26 @@ def flag_out_of_sequence(measurements: DataFrame) -> DataFrame:
     with the readings before midnight.
     """
     sequences = measurements.groupBy("vehicle_id", F.to_date("event_ts").alias("_day")).agg(
-        F.sort_array(F.collect_list(F.struct("event_ts", "measurement_id", "odometer_km"))).alias("_readings")
+        F.sort_array(F.collect_list(F.struct("event_ts", "measurement_id", "device_id", "odometer_km")))
+        .alias("_readings")
     )
+    # Flags go back to readings by (device_id, event_ts), the key AUTO CDC keeps
+    # unique in vehicle_measurements. measurement_id comes from the vendor's
+    # message id, and nothing outside our control is guaranteed unique.
     flags = (
         sequences.select(
-            F.col("_readings.measurement_id").alias("ids"),
+            F.col("_readings.device_id").alias("devices"),
+            F.col("_readings.event_ts").alias("times"),
             _keep_flags("_readings.odometer_km").alias("keep"),
         )
-        .select(F.explode(F.arrays_zip("ids", "keep")).alias("_r"))
-        .select(F.col("_r.ids").alias("measurement_id"), (~F.col("_r.keep")).alias("out_of_sequence"))
+        .select(F.explode(F.arrays_zip("devices", "times", "keep")).alias("_r"))
+        .select(
+            F.col("_r.devices").alias("device_id"),
+            F.col("_r.times").alias("event_ts"),
+            (~F.col("_r.keep")).alias("out_of_sequence"),
+        )
     )
-    return measurements.join(flags, "measurement_id", "left").withColumn(
+    return measurements.join(flags, ["device_id", "event_ts"], "left").withColumn(
         "out_of_sequence", F.coalesce("out_of_sequence", F.lit(False))
     )
 
@@ -261,5 +270,372 @@ def vehicle_trips(measurements: DataFrame, vehicles: DataFrame, minimum_stop_sec
             F.coalesce("out_of_sequence_readings", F.lit(0)).alias("out_of_sequence_readings"),
             (F.col("vehicle_last_seen").cast("double") >= F.col("end_ts").cast("double") + minimum_stop_seconds)
             .alias("is_complete"),
+        )
+    )
+
+
+def _condition_periods(measurements: DataFrame, condition: Column, maximum_gap_seconds: float) -> DataFrame:
+    """Gaps and islands for any condition: one row per unbroken period where it holds.
+
+    A period starts at a reading where the condition holds and either did not
+    hold at the previous reading, or the previous reading is more than
+    maximum_gap_seconds back (the device was silent, so we cannot say what
+    happened in between). The duration runs from the first to the last reading
+    of the period, so it never claims more than was observed.
+    """
+    window = _by_vehicle()
+    readings = _in_sequence(measurements).withColumn("_holds", F.coalesce(condition, F.lit(False)))
+
+    previous_holds = F.lag("_holds").over(window)
+    gap = F.col("event_ts").cast("double") - F.lag("event_ts").over(window).cast("double")
+    starts = F.col("_holds") & (previous_holds.isNull() | ~previous_holds | (gap > maximum_gap_seconds))
+
+    numbered = readings.withColumn(
+        "_period", F.sum(starts.cast("int")).over(window.rowsBetween(Window.unboundedPreceding, 0))
+    ).filter(F.col("_holds"))
+
+    in_period = Window.partitionBy("vehicle_id", "_period").orderBy("event_ts", "measurement_id")
+    steps = numbered.withColumn(
+        "_fuel_drop_percent",
+        F.greatest(F.col("fuel_level_percent") - F.lead("fuel_level_percent").over(in_period), F.lit(0.0)),
+    )
+
+    periods = steps.groupBy("vehicle_id", "_period").agg(
+        F.first("client_id").alias("client_id"),
+        F.min_by("device_id", "event_ts").alias("device_id"),
+        F.min_by("driver_id", "event_ts").alias("driver_id"),
+        F.min("event_ts").alias("start_ts"),
+        F.max("event_ts").alias("end_ts"),
+        F.min_by("latitude", "event_ts").alias("latitude"),
+        F.min_by("longitude", "event_ts").alias("longitude"),
+        F.count("*").alias("readings"),
+        F.max("speed_kph").alias("max_speed_kph"),
+        F.round(F.avg("speed_kph"), 1).alias("average_speed_kph"),
+        F.coalesce(F.sum("_fuel_drop_percent"), F.lit(0.0)).alias("fuel_drop_percent"),
+    )
+    return periods.withColumn(
+        "duration_seconds", (F.col("end_ts").cast("double") - F.col("start_ts").cast("double")).cast("long")
+    )
+
+
+def _with_trip(periods: DataFrame, trips: DataFrame, at: str = "start_ts") -> DataFrame:
+    """Attach the trip a row happened in, by its `at` time. A row outside any trip keeps a null trip_id."""
+    trip_ranges = trips.select(
+        F.col("vehicle_id").alias("t_vehicle_id"),
+        "trip_id",
+        F.col("start_ts").alias("t_start_ts"),
+        F.col("end_ts").alias("t_end_ts"),
+    )
+    return periods.join(
+        trip_ranges,
+        (F.col("vehicle_id") == F.col("t_vehicle_id"))
+        & F.col(at).between(F.col("t_start_ts"), F.col("t_end_ts")),
+        "left",
+    ).drop("t_vehicle_id", "t_start_ts", "t_end_ts")
+
+
+def idling_events(
+    measurements: DataFrame,
+    trips: DataFrame,
+    vehicles: DataFrame,
+    minimum_idle_seconds: float,
+    maximum_gap_seconds: float,
+) -> DataFrame:
+    """One row per idle period: engine running, vehicle stationary, for at least minimum_idle_seconds.
+
+    fuel_wasted_l counts only drops in fuel level during the period, converted
+    with the vehicle's current tank size.
+    """
+    idle = F.col("ignition_on") & (F.col("speed_kph") == 0)
+    periods = _condition_periods(measurements, idle, maximum_gap_seconds).filter(
+        F.col("duration_seconds") >= minimum_idle_seconds
+    )
+    tank = vehicles.filter(F.col("__END_AT").isNull()).select("vehicle_id", "tank_capacity_l")
+
+    return _with_trip(periods, trips).join(tank, "vehicle_id", "left").select(
+        _event_id("vehicle_id", F.col("start_ts").cast("string"), F.lit("idling")).alias("event_id"),
+        "trip_id", "vehicle_id", "client_id", "device_id", "driver_id",
+        "start_ts", "end_ts", "duration_seconds", "latitude", "longitude",
+        F.round(F.col("fuel_drop_percent") / 100 * F.col("tank_capacity_l"), 2).alias("fuel_wasted_l"),
+        "readings",
+    )
+
+
+def speeding_events(
+    measurements: DataFrame,
+    trips: DataFrame,
+    speed_limit_kph: float,
+    minimum_speeding_seconds: float,
+    maximum_gap_seconds: float,
+) -> DataFrame:
+    """One row per sustained overspeed: above speed_limit_kph for at least minimum_speeding_seconds.
+
+    A short burst, such as overtaking, is not an event: this table can lead to a
+    driver being warned, so it only records sustained speeding.
+    """
+    over = F.col("speed_kph") > speed_limit_kph
+    periods = _condition_periods(measurements, over, maximum_gap_seconds).filter(
+        F.col("duration_seconds") >= minimum_speeding_seconds
+    )
+    return _with_trip(periods, trips).select(
+        _event_id("vehicle_id", F.col("start_ts").cast("string"), F.lit("speeding")).alias("event_id"),
+        "trip_id", "vehicle_id", "client_id", "device_id", "driver_id",
+        "start_ts", "end_ts", "duration_seconds", "latitude", "longitude",
+        F.lit(speed_limit_kph).alias("speed_limit_kph"),
+        "max_speed_kph", "average_speed_kph",
+        F.round(F.col("max_speed_kph") - speed_limit_kph, 1).alias("max_over_limit_kph"),
+        "readings",
+    )
+
+
+def _has_previous(window: Window) -> Column:
+    return F.lag("event_ts").over(window).isNotNull()
+
+
+def driver_change_events(measurements: DataFrame, trips: DataFrame) -> DataFrame:
+    """One row each time a different driver's fob takes over a vehicle.
+
+    The fob is only reported while the engine runs, so a gap with no fob is not
+    a change. The comparison is with the last fob seen on this vehicle, however
+    long ago: the same driver restarting after lunch is not a change.
+    An unregistered fob still counts, with a null driver_id.
+    """
+    window = _by_vehicle()
+    earlier = window.rowsBetween(Window.unboundedPreceding, -1)
+    readings = _in_sequence(measurements).select(
+        "*",
+        F.last("driver_fob_id", ignorenulls=True).over(earlier).alias("previous_driver_fob_id"),
+        F.last("driver_id", ignorenulls=True).over(earlier).alias("previous_driver_id"),
+    )
+    changes = readings.filter(
+        F.col("driver_fob_id").isNotNull()
+        & F.col("previous_driver_fob_id").isNotNull()
+        & (F.col("driver_fob_id") != F.col("previous_driver_fob_id"))
+    )
+    return _with_trip(changes, trips, at="event_ts").select(
+        _event_id("vehicle_id", F.col("event_ts").cast("string"), F.lit("driver_change")).alias("event_id"),
+        "trip_id", "vehicle_id", "client_id", "device_id", "event_ts",
+        "previous_driver_fob_id", "previous_driver_id",
+        F.col("driver_fob_id").alias("new_driver_fob_id"),
+        F.col("driver_id").alias("new_driver_id"),
+        "latitude", "longitude",
+    )
+
+
+def diagnostic_events(measurements: DataFrame, trips: DataFrame, fault_codes: DataFrame) -> DataFrame:
+    """One row each time a fault code appears or clears.
+
+    A change from one code straight to another is two rows: the old one clears
+    and the new one appears. A vehicle's first reading is not compared with
+    anything, so a fault already active then has no "raised" row.
+    """
+    window = _by_vehicle()
+    readings = _in_sequence(measurements).select(
+        "*",
+        F.lag("fault_code").over(window).alias("previous_fault_code"),
+        _has_previous(window).alias("_has_previous"),
+    ).filter(F.col("_has_previous") & ~F.col("fault_code").eqNullSafe(F.col("previous_fault_code")))
+
+    raised = readings.filter(F.col("fault_code").isNotNull()).select(
+        "*", F.lit("fault_raised").alias("event_type"), F.col("fault_code").alias("code")
+    )
+    cleared = readings.filter(F.col("previous_fault_code").isNotNull()).select(
+        "*", F.lit("fault_cleared").alias("event_type"), F.col("previous_fault_code").alias("code")
+    )
+    codes = fault_codes.select(F.col("code"), "description", "severity")
+
+    return (
+        _with_trip(raised.unionByName(cleared), trips, at="event_ts")
+        .join(F.broadcast(codes), "code", "left")
+        .select(
+            _event_id("vehicle_id", F.col("event_ts").cast("string"), "event_type", "code").alias("event_id"),
+            "trip_id", "vehicle_id", "client_id", "device_id", "driver_id", "event_ts", "event_type",
+            F.col("code").alias("fault_code"),
+            F.coalesce("description", F.lit("unknown code")).alias("description"),
+            F.coalesce("severity", F.lit("unknown")).alias("severity"),
+            "latitude", "longitude", "odometer_km",
+        )
+    )
+
+
+def geofence_events(measurements: DataFrame, trips: DataFrame, vehicles: DataFrame, regions: DataFrame) -> DataFrame:
+    """One row each time a vehicle leaves its region's geofence, or comes back.
+
+    The geofence is a circle around the region's depot. Each vehicle is judged
+    against the region it belongs to now.
+    """
+    fence = (
+        vehicles.filter(F.col("__END_AT").isNull())
+        .select("vehicle_id", "region")
+        .join(regions.select("region", "depot_latitude", "depot_longitude", "geofence_radius_km"), "region")
+    )
+    window = _by_vehicle()
+    distance = haversine_km(F.col("latitude"), F.col("longitude"), F.col("depot_latitude"), F.col("depot_longitude"))
+    readings = (
+        _in_sequence(measurements)
+        .join(F.broadcast(fence), "vehicle_id")
+        .withColumn("distance_from_depot_km", F.round(distance, 2))
+        .withColumn("_inside", F.col("distance_from_depot_km") <= F.col("geofence_radius_km"))
+    )
+    changes = readings.withColumn("_was_inside", F.lag("_inside").over(window)).filter(
+        F.col("_was_inside").isNotNull() & (F.col("_inside") != F.col("_was_inside"))
+    )
+    event_type = F.when(F.col("_inside"), F.lit("returned_to_geofence")).otherwise(F.lit("left_geofence"))
+
+    return _with_trip(changes, trips, at="event_ts").select(
+        _event_id("vehicle_id", F.col("event_ts").cast("string"), event_type).alias("event_id"),
+        "trip_id", "vehicle_id", "client_id", "device_id", "driver_id", "event_ts",
+        event_type.alias("event_type"),
+        "region", "geofence_radius_km", "distance_from_depot_km", "latitude", "longitude",
+    )
+
+
+def refuel_events(measurements: DataFrame, vehicles: DataFrame, minimum_increase_percent: float) -> DataFrame:
+    """One row per refuel: the fuel level rising by at least minimum_increase_percent.
+
+    Consecutive rising readings are one refuel, so a pump that fills over several
+    readings is counted once. Smaller rises are sloshing or sensor noise.
+    """
+    window = _by_vehicle()
+    readings = _in_sequence(measurements).select(
+        "*",
+        F.lag("fuel_level_percent").over(window).alias("_previous_fuel"),
+        F.lag("event_ts").over(window).alias("_previous_ts"),
+    )
+    rising = readings.withColumn(
+        "_rising", F.coalesce(F.col("fuel_level_percent") > F.col("_previous_fuel"), F.lit(False))
+    )
+    previous_rising = F.lag("_rising").over(window)
+    starts = F.col("_rising") & (previous_rising.isNull() | ~previous_rising)
+
+    fills = (
+        rising.withColumn("_fill", F.sum(starts.cast("int")).over(window.rowsBetween(Window.unboundedPreceding, 0)))
+        .filter(F.col("_rising"))
+        .groupBy("vehicle_id", "_fill")
+        .agg(
+            F.first("client_id").alias("client_id"),
+            F.min_by("device_id", "event_ts").alias("device_id"),
+            F.min_by("driver_id", "event_ts").alias("driver_id"),
+            F.min("_previous_ts").alias("start_ts"),
+            F.max("event_ts").alias("end_ts"),
+            F.min_by("_previous_fuel", "event_ts").alias("fuel_before_percent"),
+            F.max_by("fuel_level_percent", "event_ts").alias("fuel_after_percent"),
+            F.max_by("latitude", "event_ts").alias("latitude"),
+            F.max_by("longitude", "event_ts").alias("longitude"),
+        )
+        .withColumn("added_percent", F.round(F.col("fuel_after_percent") - F.col("fuel_before_percent"), 2))
+        .filter(F.col("added_percent") >= minimum_increase_percent)
+    )
+    tank = vehicles.filter(F.col("__END_AT").isNull()).select("vehicle_id", "tank_capacity_l")
+
+    return fills.join(tank, "vehicle_id", "left").select(
+        _event_id("vehicle_id", F.col("end_ts").cast("string"), F.lit("refuel")).alias("event_id"),
+        "vehicle_id", "client_id", "device_id", "driver_id", "start_ts", "end_ts",
+        "fuel_before_percent", "fuel_after_percent", "added_percent",
+        F.round(F.col("added_percent") / 100 * F.col("tank_capacity_l"), 2).alias("litres_added"),
+        F.to_date("end_ts").alias("refuel_date"),
+        "latitude", "longitude",
+    )
+
+
+HARSH_EVENT_TYPES = {"harsh_brake": "harsh_brake_count", "harsh_acceleration": "harsh_accel_count"}
+
+
+def driver_behavior_events(measurements: DataFrame, trips: DataFrame) -> DataFrame:
+    """One row per harsh brake or harsh acceleration.
+
+    Each reading counts the harsh events since the device's previous reading, so
+    a reading with a count of 2 becomes two rows (event_index 1 and 2).
+
+    Unlike the other tables, out-of-sequence readings are kept: their counts are
+    real events, and dropping them would undercount a driver's harsh driving.
+    The reading's time is not trustworthy, so such an event gets no trip_id and
+    is marked timestamp_trusted = false. Its driver is still right: the fob
+    comes with the reading's values, not its timestamp.
+    """
+    flagged = flag_out_of_sequence(measurements)
+    per_type = [
+        flagged.filter(F.col(column) > 0).select(
+            "*",
+            F.lit(event_type).alias("event_type"),
+            F.explode(F.sequence(F.lit(1), F.col(column))).alias("event_index"),
+        )
+        for event_type, column in HARSH_EVENT_TYPES.items()
+    ]
+    events = per_type[0].unionByName(per_type[1])
+
+    trusted = events.filter(~F.col("out_of_sequence"))
+    untrusted = events.filter(F.col("out_of_sequence")).withColumn("trip_id", F.lit(None).cast("string"))
+    with_trips = _with_trip(trusted, trips, at="event_ts").unionByName(untrusted)
+
+    return with_trips.select(
+        _event_id(
+            "device_id", F.col("event_ts").cast("string"), "event_type", F.col("event_index").cast("string")
+        ).alias("event_id"),
+        "trip_id", "vehicle_id", "client_id", "device_id", "driver_id", "driver_fob_id",
+        "event_ts", "event_type", "event_index", "speed_kph", "latitude", "longitude",
+        (~F.col("out_of_sequence")).alias("timestamp_trusted"),
+        "measurement_id",
+    )
+
+
+def _bucket_start(ts: Column, bucket_seconds: int) -> Column:
+    epoch = F.unix_timestamp(ts)
+    return F.timestamp_seconds(epoch - F.pmod(epoch, F.lit(bucket_seconds)))
+
+
+def device_heartbeats(bronze_messages: DataFrame, device_assignments: DataFrame, bucket_minutes: int) -> DataFrame:
+    """One row per device per time bucket: how many messages arrived, or silent.
+
+    Built from bronze, not silver, because a device that sends only broken
+    messages is still alive: liveness counts every message, valid or not. The
+    device comes from the Event Hubs partition key, which the gateway sets to the
+    device id on every message, including ones too broken to parse.
+
+    Buckets run on arrival time, from each device's first message to the newest
+    message of any device. A bucket with no message from a device is a silent
+    row, so a device that stops reporting shows up instead of just disappearing.
+    """
+    bucket_seconds = bucket_minutes * 60
+    arrivals = bronze_messages.filter(F.col("partition_key").isNotNull()).select(
+        F.col("partition_key").alias("device_id"),
+        _bucket_start(F.col("eventhub_enqueued_at"), bucket_seconds).alias("bucket_start"),
+    )
+    counts = arrivals.groupBy("device_id", "bucket_start").agg(F.count("*").alias("messages_received"))
+
+    newest = arrivals.agg(F.max("bucket_start").alias("newest_bucket"))
+    spine = (
+        arrivals.groupBy("device_id")
+        .agg(F.min("bucket_start").alias("first_bucket"))
+        .crossJoin(newest)
+        .select(
+            "device_id",
+            F.explode(
+                F.sequence("first_bucket", "newest_bucket", F.expr(f"INTERVAL {bucket_minutes} MINUTES"))
+            ).alias("bucket_start"),
+        )
+    )
+
+    bucket_date = F.to_date("bucket_start")
+    assignment = device_assignments.select(
+        F.col("device_id").alias("a_device_id"), "vehicle_id", "client_id",
+        F.col("valid_from").alias("a_valid_from"), F.col("valid_to").alias("a_valid_to"),
+    )
+    messages = F.coalesce(F.col("messages_received"), F.lit(0))
+
+    return (
+        spine.join(counts, ["device_id", "bucket_start"], "left")
+        .join(
+            F.broadcast(assignment),
+            (F.col("device_id") == F.col("a_device_id"))
+            & (bucket_date >= F.col("a_valid_from"))
+            & (F.col("a_valid_to").isNull() | (bucket_date < F.col("a_valid_to"))),
+            "left",
+        )
+        .select(
+            "device_id", "vehicle_id", "client_id", "bucket_start",
+            (F.col("bucket_start") + F.expr(f"INTERVAL {bucket_minutes} MINUTES")).alias("bucket_end"),
+            messages.alias("messages_received"),
+            F.when(messages > 0, F.lit("reporting")).otherwise(F.lit("silent")).alias("status"),
         )
     )

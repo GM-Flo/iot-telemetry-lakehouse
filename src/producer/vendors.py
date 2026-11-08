@@ -170,8 +170,11 @@ class Gateway:
         self.ats_batch_size = ats_batch_size
         self._ats_buffers: dict[str, list[dict]] = {}
 
-    def _message_id(self) -> str:
-        return str(uuid.UUID(int=self.rng.getrandbits(128), version=4))
+    @staticmethod
+    def _message_id() -> str:
+        # True randomness, never the seeded generator: a seed would repeat the same
+        # ids on every producer run, and a message id must be unique forever.
+        return str(uuid.uuid4())
 
     def envelope(self, vendor_id: str, payload: dict, received_at: datetime) -> dict:
         return {

@@ -8,3 +8,5 @@ speeding_limit,120,kph,Speed above this counts as speeding
 minimum_idle_duration,120,seconds,Engine on and stationary for at least this long counts as idling
 device_silent_after,15,minutes,No message from a device for this long marks it silent
 minimum_stop_between_trips,600,seconds,Ignition off for less than this joins two drives into one trip
+minimum_speeding_duration,240,seconds,Speed must stay above the limit at least this long to count as speeding
+minimum_refuel_increase,5,percent,A rise in fuel level smaller than this is sensor noise or sloshing, not a refuel
