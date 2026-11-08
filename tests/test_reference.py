@@ -94,3 +94,7 @@ def test_validity_limits_cover_only_numeric_standard_fields():
     for field, (low, high) in limits.items():
         assert STANDARD_FIELDS[field] in ("double", "int"), field
         assert low < high, field
+
+
+def test_thresholds_include_the_trip_rule():
+    assert ref.thresholds(REFERENCE_DIR)["minimum_stop_between_trips"] == 600

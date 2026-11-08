@@ -17,7 +17,7 @@ import pytest
 from jsonschema import Draft202012Validator
 
 from src.producer.fleet import Fleet
-from src.producer.produce import corrupt
+from src.producer.produce import corrupt, parse_args, resume_fleet, save_state
 from src.producer.registry import CLIENTS, UTC_OFFSET_HOURS, VENDORS, is_operating, select_clients
 from src.producer.vendors import (
     GTK_TIME_FORMAT,
@@ -475,3 +475,87 @@ class TestGlitches:
         fleet.advance(30, now=NOW)
         for _, e in gateway.messages(fleet.readings(now=NOW, late_fraction=0), NOW):
             validator(VENDORS[e["vendor_id"]].contract).validate(e["payload"])
+
+
+class TestFleetState:
+    """The fleet must keep existing between producer runs, as a real fleet does."""
+
+    def driven_fleet(self, hours=2, profile=1, seed=5):
+        fleet = Fleet(select_clients(profile), seed=seed, glitch_fraction=0)
+        run_hours(fleet, hours, NOW, step=300)
+        return fleet
+
+    def test_a_new_run_continues_where_the_last_one_stopped(self, tmp_path):
+        before = self.driven_fleet()
+        before.save_state(tmp_path / "state.json", saved_at=NOW)
+
+        after = Fleet(select_clients(1), seed=5, glitch_fraction=0)
+        after.load_state(tmp_path / "state.json", now=NOW + timedelta(minutes=30))
+
+        for old, new in zip(before.transmitting_devices, after.transmitting_devices, strict=True):
+            assert (new.odometer_km, new.fuel_level_pct, new.lat, new.lon) == (
+                old.odometer_km, old.fuel_level_pct, old.lat, old.lon)
+
+    def test_odometers_never_go_back_across_a_restart(self, tmp_path):
+        before = self.driven_fleet()
+        last = {v.device_id: v.odometer_km for v in before.transmitting_devices}
+        before.save_state(tmp_path / "state.json", saved_at=NOW + timedelta(hours=2))
+
+        after = Fleet(select_clients(1), seed=5, glitch_fraction=0)
+        after.load_state(tmp_path / "state.json", now=NOW + timedelta(hours=10))
+        for r in run_hours(after, 2, NOW + timedelta(hours=10), step=300):
+            assert r["odometer_km"] >= last[r["device_id"]]
+
+    def test_engines_cool_down_over_a_long_break_only(self, tmp_path):
+        fleet = self.driven_fleet()
+        fleet.save_state(tmp_path / "state.json", saved_at=NOW)
+
+        short = Fleet(select_clients(1), seed=5, glitch_fraction=0)
+        short.vehicles[0].engine_temp_c = 95.0
+        short.load_state(tmp_path / "state.json", now=NOW + timedelta(minutes=20))
+        long = Fleet(select_clients(1), seed=5, glitch_fraction=0)
+        long.load_state(tmp_path / "state.json", now=NOW + timedelta(hours=8))
+
+        assert short.vehicles[0].engine_temp_c == 95.0
+        assert all(v.engine_temp_c == 25.0 for v in long.transmitting_devices)
+
+    @pytest.mark.parametrize("profile, seed", [(None, 5), (1, 6)])
+    def test_state_of_another_fleet_is_refused(self, tmp_path, profile, seed):
+        self.driven_fleet(hours=0.5).save_state(tmp_path / "state.json", saved_at=NOW)
+        other = Fleet(select_clients(profile), seed=seed, glitch_fraction=0)
+        with pytest.raises(ValueError, match="different fleet"):
+            other.load_state(tmp_path / "state.json", now=NOW)
+
+    def test_save_leaves_no_temporary_file(self, tmp_path):
+        self.driven_fleet(hours=0.5).save_state(tmp_path / "state.json", saved_at=NOW)
+        assert [p.name for p in tmp_path.iterdir()] == ["state.json"]
+
+
+class TestResumeFleet:
+    def args(self, tmp_path, *extra):
+        return parse_args(["--state-file", str(tmp_path / "state.json"), *extra])
+
+    def test_default_state_file_is_per_environment(self):
+        assert parse_args(["--env", "prod"]).state_file == "producer_state_prod.json"
+        assert parse_args([]).state_file == "producer_state_dev.json"
+
+    def test_first_run_starts_a_new_fleet(self, tmp_path):
+        fleet = Fleet(select_clients(1), seed=5)
+        assert resume_fleet(fleet, self.args(tmp_path)) is True
+
+    def test_backfill_into_already_sent_history_is_refused(self, tmp_path):
+        fleet = Fleet(select_clients(1), seed=5)
+        fleet.save_state(tmp_path / "state.json", saved_at=datetime.now(timezone.utc) - timedelta(hours=1))
+
+        args = self.args(tmp_path, "--mode", "backfill", "--backfill-hours", "6")
+        assert resume_fleet(Fleet(select_clients(1), seed=5), args) is False
+
+    def test_fresh_fleet_ignores_the_saved_state(self, tmp_path):
+        Fleet(select_clients(1), seed=5).save_state(tmp_path / "state.json", saved_at=datetime.now(timezone.utc))
+        args = self.args(tmp_path, "--mode", "backfill", "--fresh-fleet")
+        assert resume_fleet(Fleet(select_clients(1), seed=5), args) is True
+
+    def test_dry_run_never_writes_state(self, tmp_path):
+        args = self.args(tmp_path, "--dry-run")
+        save_state(Fleet(select_clients(1), seed=5), args, NOW)
+        assert not (tmp_path / "state.json").exists()

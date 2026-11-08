@@ -19,10 +19,13 @@ afterwards by vendors.py, the way a real vendor platform would.
 
 from __future__ import annotations
 
+import json
 import math
+import os
 import random
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
 
 from src.producer.registry import (
     BASE_FUEL_PRICE_PER_LITRE,
@@ -123,6 +126,7 @@ VIN_ALPHABET = "ABCDEFGHJKLMNPRSTUVWXYZ0123456789"
 
 NOMINAL_ENGINE_TEMP_C = 90.0
 MAX_ENGINE_TEMP_C = 125.0
+AMBIENT_TEMP_C = 25.0
 
 DRIVER_STYLES = {
     #              weight  speed_bias  harsh/h  overspeed  fuel_factor
@@ -283,7 +287,7 @@ class Vehicle:
         if not self.ignition_on:
             self.rpm = 0
             self.speed_kph = 0.0
-            self.engine_temp_c = round(max(25.0, self.engine_temp_c - 4.0), 1)
+            self.engine_temp_c = round(max(AMBIENT_TEMP_C, self.engine_temp_c - 4.0), 1)
             self.oil_pressure_kpa = 0.0
             self.coolant_pressure_kpa = round(max(0.0, self.coolant_pressure_kpa - 8.0), 1)
             self.battery_voltage = round(rng.uniform(12.2, 12.7), 2)
@@ -641,6 +645,66 @@ class Fleet:
 
         for ghost in self.ghost_devices:
             ghost.driver = self._ghost_twins[id(ghost)].driver
+
+    # What a vehicle carries from one producer run to the next. Everything else
+    # (driver, ignition, speed) is decided afresh by the roster and the clock.
+    PERSISTED_FIELDS = ("odometer_km", "fuel_level_pct", "lat", "lon", "heading_deg", "active_dtc")
+    STATE_VERSION = 1
+
+    def save_state(self, path: str | Path, saved_at: datetime) -> None:
+        """Write each device's state, so the next run continues where this one stopped.
+
+        Written to a temporary file and renamed, so an interrupted save never
+        leaves a half-written state behind.
+        """
+        state = {
+            "version": self.STATE_VERSION,
+            "saved_at": saved_at.isoformat(),
+            "devices": {
+                v.device_id: {
+                    **{f: getattr(v, f) for f in self.PERSISTED_FIELDS},
+                    "elapsed_s": v._elapsed_s,
+                }
+                for v in self.transmitting_devices
+            },
+        }
+        target = Path(path)
+        temporary = target.with_name(target.name + ".tmp")
+        temporary.write_text(json.dumps(state, indent=1))
+        os.replace(temporary, target)
+
+    def load_state(self, path: str | Path, now: datetime) -> datetime:
+        """Continue from a saved state. Returns when it was saved.
+
+        The state must belong to this exact fleet. A different seed or profile
+        has different devices, and mixing them would put one fleet's odometers
+        on another's vehicles, so that is refused rather than patched.
+
+        After a long gap the engines have cooled down, as they would overnight.
+        """
+        state = json.loads(Path(path).read_text())
+        if state.get("version") != self.STATE_VERSION:
+            raise ValueError(f"{path}: unsupported state version {state.get('version')}")
+
+        saved = set(state["devices"])
+        current = {v.device_id for v in self.transmitting_devices}
+        if saved != current:
+            raise ValueError(
+                f"{path} belongs to a different fleet ({len(saved)} devices saved, "
+                f"{len(current)} in this one, {len(saved & current)} in common). "
+                "Check --env and --seed, or start over with --fresh-fleet."
+            )
+
+        saved_at = datetime.fromisoformat(state["saved_at"])
+        cooled = (now - saved_at) > timedelta(hours=1)
+        for v in self.transmitting_devices:
+            values = state["devices"][v.device_id]
+            for f in self.PERSISTED_FIELDS:
+                setattr(v, f, values[f])
+            v._elapsed_s = values["elapsed_s"]
+            if cooled:
+                v.engine_temp_c = AMBIENT_TEMP_C
+        return saved_at
 
     @property
     def transmitting_devices(self) -> list[Vehicle]:

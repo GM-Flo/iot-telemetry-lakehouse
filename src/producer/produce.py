@@ -206,11 +206,22 @@ def describe(fleet: Fleet, args) -> None:
         LOG.info("[%s] integration fault by design: %s -> %s", args.env, vehicle_id, issue)
 
 
+STATE_SAVE_EVERY_TICKS = 20
+
+
+def save_state(fleet, args, at: datetime) -> None:
+    if args.dry_run:
+        return
+    fleet.save_state(args.state_file, saved_at=at)
+
+
 def run_live(sink, fleet, gateway, args, rng) -> None:
     describe(fleet, args)
 
     started = time.monotonic()
     last_report = 0
+    tick = 0
+    now = datetime.now(timezone.utc)
 
     while not SHUTDOWN:
         loop_start = time.monotonic()
@@ -219,6 +230,9 @@ def run_live(sink, fleet, gateway, args, rng) -> None:
         fleet.advance(args.interval, now=now)
         sink.send(build_items(fleet, gateway, now,
                               args.late_fraction, args.malformed_fraction, rng))
+        tick += 1
+        if tick % STATE_SAVE_EVERY_TICKS == 0:
+            save_state(fleet, args, now)
 
         if sink.sent - last_report >= 500:
             last_report = sink.sent
@@ -229,11 +243,18 @@ def run_live(sink, fleet, gateway, args, rng) -> None:
         if elapsed < args.interval and not SHUTDOWN:
             time.sleep(args.interval - elapsed)
 
+    save_state(fleet, args, now)
+
+
+def backfill_start(args) -> datetime:
+    return datetime.now(timezone.utc) - timedelta(hours=args.backfill_hours)
+
 
 def run_backfill(sink, fleet, gateway, args, rng) -> None:
     step = args.backfill_interval
     ticks = int((args.backfill_hours * 3600) / step)
-    start = datetime.now(timezone.utc) - timedelta(hours=args.backfill_hours)
+    start = backfill_start(args)
+    now = start
 
     LOG.info("backfill: %.1fh at %.0fs resolution, %d ticks", args.backfill_hours, step, ticks)
     describe(fleet, args)
@@ -247,6 +268,40 @@ def run_backfill(sink, fleet, gateway, args, rng) -> None:
                               args.late_fraction, args.malformed_fraction, rng))
         if tick and tick % 100 == 0:
             LOG.info("backfill %d/%d ticks, sent=%d", tick, ticks, sink.sent)
+            save_state(fleet, args, now)
+
+    save_state(fleet, args, now)
+
+
+def resume_fleet(fleet, args) -> bool:
+    """Continue the fleet from its saved state, if there is one. False means: do not start.
+
+    Each run otherwise rebuilds the fleet from the seed, putting every vehicle
+    back at its first odometer reading and position. Real vehicles keep their
+    odometer between our runs, so the producer must too.
+    """
+    path = Path(args.state_file)
+    if args.fresh_fleet or not path.exists():
+        LOG.info("[%s] starting a new fleet%s", args.env,
+                 "" if args.dry_run else f"; its state will be saved to {path}")
+        return True
+
+    starts_at = backfill_start(args) if args.mode == "backfill" else datetime.now(timezone.utc)
+    try:
+        saved_at = fleet.load_state(path, now=starts_at)
+    except ValueError as error:
+        LOG.error("%s", error)
+        return False
+
+    if starts_at < saved_at:
+        LOG.error("%s was saved at %s, but this run would start earlier, at %s, and rewrite "
+                  "history that was already sent. Use fewer --backfill-hours, or --fresh-fleet.",
+                  path, saved_at.isoformat(timespec="seconds"), starts_at.isoformat(timespec="seconds"))
+        return False
+
+    LOG.info("[%s] continuing the fleet saved at %s (%s ago)", args.env,
+             saved_at.isoformat(timespec="seconds"), str(starts_at - saved_at).split(".")[0])
+    return True
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -265,6 +320,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                              "after their data started arriving")
 
     parser.add_argument("--seed", type=int, default=42, help="-1 for a non-deterministic fleet")
+    parser.add_argument("--state-file", help="where the fleet's state is kept between runs "
+                                             "(default: producer_state_<env>.json)")
+    parser.add_argument("--fresh-fleet", action="store_true",
+                        help="ignore the saved state and start the fleet from the seed again")
     parser.add_argument("--interval", type=float, help="override the profile's live interval")
     parser.add_argument("--backfill-hours", type=float, default=6.0)
     parser.add_argument("--backfill-interval", type=float, default=30.0)
@@ -278,6 +337,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     args = parser.parse_args(argv)
     if args.interval is None:
         args.interval = PROFILES[args.env]["interval"]
+    if args.state_file is None:
+        args.state_file = f"producer_state_{args.env}.json"
     return args
 
 
@@ -320,6 +381,9 @@ def main(argv: list[str] | None = None) -> int:
         if not AZURE_AVAILABLE:
             LOG.error("azure-eventhub not installed: pip install -r src/producer/requirements.txt")
             return 2
+
+    if not resume_fleet(fleet, args):
+        return 2
 
     gateway = Gateway(rng, ats_batch_size=args.ats_batch_size)
     sink = TelemetrySink(conn_str, args.dry_run)

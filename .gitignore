@@ -35,3 +35,5 @@ checkpoints/
 .idea/
 .vscode/
 fleet_registry_*.json
+producer_state_*.json
+producer_state_*.json.tmp

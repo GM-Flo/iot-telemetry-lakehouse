@@ -7,3 +7,4 @@ minimum_battery_voltage,12.0,volts,Battery voltage below this is a weak battery
 speeding_limit,120,kph,Speed above this counts as speeding
 minimum_idle_duration,120,seconds,Engine on and stationary for at least this long counts as idling
 device_silent_after,15,minutes,No message from a device for this long marks it silent
+minimum_stop_between_trips,600,seconds,Ignition off for less than this joins two drives into one trip

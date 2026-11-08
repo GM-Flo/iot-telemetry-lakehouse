@@ -88,3 +88,9 @@ def validity_limits(reference_dir: str | Path) -> dict[str, tuple[float, float]]
     """Standard field -> (minimum, maximum) a working sensor can report."""
     rows = read_rows(Path(reference_dir) / "validity_limits.csv")
     return {r["field"]: (float(r["minimum"]), float(r["maximum"])) for r in rows}
+
+
+def thresholds(reference_dir: str | Path) -> dict[str, float]:
+    """Threshold name -> value, from anomaly_thresholds.csv."""
+    rows = read_rows(Path(reference_dir) / "anomaly_thresholds.csv")
+    return {r["threshold_name"]: float(r["value"]) for r in rows}
