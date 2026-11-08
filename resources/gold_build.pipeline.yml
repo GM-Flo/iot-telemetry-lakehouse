@@ -1,0 +1,35 @@
+resources:
+  pipelines:
+    gold_build:
+      name: gold_build
+      catalog: ${var.catalog}
+      schema: gold
+      edition: ADVANCED
+      channel: CURRENT
+      photon: false
+      serverless: false
+      continuous: false
+
+      configuration:
+        catalog: ${var.catalog}
+        bundle.sourcePath: ${workspace.file_path}
+        pipelines.clusterShutdown.delay: 60s
+
+      clusters:
+        - label: default
+          node_type_id: ${var.node_type}
+          num_workers: 0
+          spark_conf:
+            spark.master: "local[*, 4]"
+            spark.databricks.cluster.profile: singleNode
+          custom_tags:
+            ResourceClass: SingleNode
+            project: iot-telemetry-lakehouse
+            layer: gold
+            managed_by: databricks-bundle
+
+      libraries:
+        - file:
+            path: ../pipelines/gold/dimensions.py
+        - file:
+            path: ../pipelines/gold/facts.py

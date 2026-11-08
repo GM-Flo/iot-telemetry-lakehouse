@@ -155,11 +155,13 @@ class TestWithProducerData:
 
 class TestQuarantineInvalidValues:
     def test_only_the_bad_reading_is_quarantined(self, spark):
-        validated = check_validity(readings_from_fleet(spark, glitch_fraction=0), LIMITS)
+        # Built once and reused: message ids are random, so a second build would have other ids.
+        readings = readings_from_fleet(spark, glitch_fraction=0).cache()
+        validated = check_validity(readings, LIMITS)
         total = validated.count()
         one_bad = validated.limit(1).select("measurement_id").first()[0]
 
-        broken = readings_from_fleet(spark, glitch_fraction=0).withColumn(
+        broken = readings.withColumn(
             "engine_temperature_celsius",
             F.when(F.col("measurement_id") == one_bad, F.lit(999.9)).otherwise(F.col("engine_temperature_celsius")),
         )
