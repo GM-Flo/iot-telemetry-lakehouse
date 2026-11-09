@@ -16,13 +16,15 @@ permissions:
 
 env:
   PYTHON_VERSION: "3.11"
+  # Same version as local development; bump both together.
+  DATABRICKS_CLI_VERSION: "1.24.0"
 
 jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
       - run: pip install ruff
@@ -32,15 +34,15 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
           cache-dependency-path: |
             requirements-dev.txt
             src/producer/requirements.txt
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: "17"
@@ -68,8 +70,14 @@ jobs:
       DATABRICKS_CLIENT_ID: ${{ secrets.DATABRICKS_CLIENT_ID }}
       DATABRICKS_CLIENT_SECRET: ${{ secrets.DATABRICKS_CLIENT_SECRET }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: databricks/setup-cli@main
+      - uses: actions/checkout@v5
+      - name: Install Databricks CLI
+        run: |
+          curl -fsSL --retry 6 --retry-delay 15 --retry-all-errors -o "$RUNNER_TEMP/cli.zip" \
+            "https://github.com/databricks/cli/releases/download/v${DATABRICKS_CLI_VERSION}/databricks_cli_${DATABRICKS_CLI_VERSION}_linux_amd64.zip"
+          unzip -q "$RUNNER_TEMP/cli.zip" -d "$RUNNER_TEMP/databricks-cli"
+          echo "$RUNNER_TEMP/databricks-cli" >> "$GITHUB_PATH"
+      - run: databricks --version
       - run: databricks bundle validate --target dev
       - run: databricks bundle validate --target prod
 
@@ -87,6 +95,12 @@ jobs:
       DATABRICKS_CLIENT_ID: ${{ secrets.DATABRICKS_CLIENT_ID }}
       DATABRICKS_CLIENT_SECRET: ${{ secrets.DATABRICKS_CLIENT_SECRET }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: databricks/setup-cli@main
+      - uses: actions/checkout@v5
+      - name: Install Databricks CLI
+        run: |
+          curl -fsSL --retry 6 --retry-delay 15 --retry-all-errors -o "$RUNNER_TEMP/cli.zip" \
+            "https://github.com/databricks/cli/releases/download/v${DATABRICKS_CLI_VERSION}/databricks_cli_${DATABRICKS_CLI_VERSION}_linux_amd64.zip"
+          unzip -q "$RUNNER_TEMP/cli.zip" -d "$RUNNER_TEMP/databricks-cli"
+          echo "$RUNNER_TEMP/databricks-cli" >> "$GITHUB_PATH"
+      - run: databricks --version
       - run: databricks bundle deploy --target prod
