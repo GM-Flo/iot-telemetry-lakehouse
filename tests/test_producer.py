@@ -16,8 +16,9 @@ from pathlib import Path
 import pytest
 from jsonschema import Draft202012Validator
 
+from src.producer import produce
 from src.producer.fleet import Fleet
-from src.producer.produce import corrupt, parse_args, resume_fleet, save_state
+from src.producer.produce import corrupt, parse_args, resume_fleet, run_backfill, save_state
 from src.producer.registry import CLIENTS, UTC_OFFSET_HOURS, VENDORS, is_operating, select_clients
 from src.producer.vendors import (
     GTK_TIME_FORMAT,
@@ -570,3 +571,123 @@ class TestResumeFleet:
         args = self.args(tmp_path, "--dry-run")
         save_state(Fleet(select_clients(1), seed=5), args, NOW)
         assert not (tmp_path / "state.json").exists()
+
+
+class RecordingSink:
+    def __init__(self):
+        self.calls: list[list[tuple[str, str]]] = []
+        self.sent = 0
+
+    def send(self, items):
+        self.calls.append(list(items))
+        self.sent += len(items)
+
+
+def event_times(items) -> list[datetime]:
+    return [datetime.fromisoformat(json.loads(body)["received_at"]) for _, body in items]
+
+
+class TestBackfill:
+    def args(self, tmp_path, *extra):
+        return parse_args(["--mode", "backfill", "--state-file", str(tmp_path / "state.json"),
+                           "--malformed-fraction", "0", *extra])
+
+    def run(self, args, fleet=None):
+        fleet = fleet or Fleet(select_clients(1), seed=5, glitch_fraction=0)
+        assert resume_fleet(fleet, args) is True
+        sink = RecordingSink()
+        run_backfill(sink, fleet, Gateway(random.Random(5)), args, random.Random(5))
+        return fleet, sink
+
+    def test_ticks_are_sent_together_not_one_send_per_tick(self, tmp_path):
+        _, sink = self.run(self.args(tmp_path, "--backfill-hours", "1", "--backfill-flush-ticks", "40"))
+        assert len(sink.calls) == 4  # 121 ticks: three full sends and the rest
+        assert sink.sent == sum(len(c) for c in sink.calls) > 0
+
+    def test_state_is_saved_at_the_last_tick_sent(self, tmp_path):
+        args = self.args(tmp_path, "--backfill-hours", "1", "--backfill-flush-ticks", "40")
+        _, sink = self.run(args)
+        last_sent = max(event_times(sink.calls[-1]))
+        assert produce.saved_state_time(args) == last_sent
+
+    def test_resuming_a_finished_backfill_sends_nothing(self, tmp_path):
+        self.run(self.args(tmp_path, "--backfill-hours", "1"))
+        _, more = self.run(self.args(tmp_path, "--resume-backfill"))
+        assert sum(len(c) for c in more.calls) == 0
+
+    def test_resume_after_an_interruption_leaves_no_gap(self, tmp_path):
+        args = self.args(tmp_path, "--backfill-hours", "2", "--backfill-flush-ticks", "40")
+        fleet = Fleet(select_clients(1), seed=5, glitch_fraction=0)
+        sink = RecordingSink()
+        original_send = sink.send
+
+        def interrupt_after_first_send(items):
+            original_send(items)
+            produce.SHUTDOWN = True
+
+        sink.send = interrupt_after_first_send
+        resume_fleet(fleet, args)
+        try:
+            run_backfill(sink, fleet, Gateway(random.Random(5)), args, random.Random(5))
+        finally:
+            produce.SHUTDOWN = False
+        sent_until = max(event_times(sink.calls[0]))
+        assert produce.saved_state_time(args) == sent_until
+
+        _, more = self.run(self.args(tmp_path, "--resume-backfill"))
+        times = sorted(t for call in more.calls for t in event_times(call))
+        assert times[0] == sent_until + timedelta(seconds=30)
+        assert times[-1] > datetime.now(timezone.utc) - timedelta(seconds=60)
+
+    def test_resume_needs_a_saved_state(self, tmp_path):
+        with pytest.raises(SystemExit):
+            self.args(tmp_path, "--resume-backfill")
+
+    def test_resume_and_fresh_fleet_cannot_be_combined(self, tmp_path):
+        Fleet(select_clients(1), seed=5).save_state(tmp_path / "state.json", saved_at=NOW)
+        with pytest.raises(SystemExit):
+            self.args(tmp_path, "--resume-backfill", "--fresh-fleet")
+
+
+class FakeBatch:
+    def __init__(self, key, capacity):
+        self.key, self.capacity, self.events = key, capacity, []
+
+    def add(self, event):
+        if len(self.events) == self.capacity:
+            raise ValueError("EventDataBatch has reached its size limit")
+        self.events.append(event)
+
+
+class FakeClient:
+    eventhub_name = "vehicle-telemetry-test"
+
+    def __init__(self, capacity):
+        self.capacity, self.sent = capacity, []
+
+    def create_batch(self, partition_key):
+        return FakeBatch(partition_key, self.capacity)
+
+    def send_batch(self, batch):
+        self.sent.append((batch.key, list(batch.events)))
+
+
+class TestSinkBatches:
+    def test_full_batches_are_split_and_order_is_kept_per_key(self, monkeypatch):
+        monkeypatch.setattr(produce, "EventData", lambda body: body)
+        sink = produce.TelemetrySink("conn", dry_run=False)
+        client = FakeClient(capacity=3)
+        sink._client = client
+
+        items = [("A", f"a{i}") for i in range(7)] + [("B", "b0")]
+        sink.send(items)
+
+        assert [(k, len(e)) for k, e in client.sent] == [("A", 3), ("A", 3), ("A", 1), ("B", 1)]
+        assert [e for k, events in client.sent if k == "A" for e in events] == [f"a{i}" for i in range(7)]
+        assert sink.sent == 8 and sink.failed == 0
+
+
+
+
+
+

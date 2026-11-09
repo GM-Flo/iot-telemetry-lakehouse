@@ -84,6 +84,7 @@ spark.sql(f"""
     LOCATION '{abfss("volumes", f"landing/{environment}")}'
     COMMENT 'Landing zone for file sources, such as daily registry snapshots.'
 """)
+dbutils.fs.mkdirs(f"/Volumes/{catalog}/bronze/landing/registry")
 
 # COMMAND ----------
 
@@ -106,3 +107,5 @@ if deployer:
 display(spark.sql(f"SHOW SCHEMAS IN {catalog}"))
 if deployer:
     display(spark.sql(f"SHOW GRANTS `{deployer}` ON CATALOG {catalog}"))
+
+

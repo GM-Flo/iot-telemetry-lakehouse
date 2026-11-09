@@ -17,6 +17,7 @@ same command sends to dev or prod depending only on which string is loaded.
 Usage:
   python src/producer/produce.py --env dev
   python src/producer/produce.py --env prod --mode backfill --backfill-hours 6
+  python src/producer/produce.py --env prod --mode backfill --resume-backfill
   python src/producer/produce.py --env dev --dry-run
   python src/producer/produce.py --env prod --export-registry fleet_registry.json
 """
@@ -72,7 +73,9 @@ class TelemetrySink:
     """Event Hubs sender with reconnect, or a stdout sink in dry-run mode.
 
     Accepts (partition_key, body) pairs where body is already a string, so
-    deliberately malformed payloads reach the hub intact.
+    deliberately malformed payloads reach the hub intact. Messages are grouped
+    by partition key, one batch per key, split when a batch reaches the size
+    limit: each batch is one round trip, so fewer, fuller batches send faster.
     """
 
     def __init__(self, conn_str: str | None, dry_run: bool) -> None:
@@ -115,7 +118,12 @@ class TelemetrySink:
                 for key, bodies in grouped.items():
                     batch = client.create_batch(partition_key=key)
                     for body in bodies:
-                        batch.add(EventData(body))
+                        try:
+                            batch.add(EventData(body))
+                        except ValueError:
+                            client.send_batch(batch)
+                            batch = client.create_batch(partition_key=key)
+                            batch.add(EventData(body))
                     client.send_batch(batch)
                 self.sent += len(items)
                 return
@@ -246,30 +254,55 @@ def run_live(sink, fleet, gateway, args, rng) -> None:
     save_state(fleet, args, now)
 
 
+def saved_state_time(args) -> datetime:
+    return datetime.fromisoformat(json.loads(Path(args.state_file).read_text())["saved_at"])
+
+
 def backfill_start(args) -> datetime:
+    """Where the backfill's history begins: a number of hours ago, or, when resuming
+    an interrupted backfill, where the saved state stopped."""
+    if args.resume_backfill:
+        return saved_state_time(args)
     return datetime.now(timezone.utc) - timedelta(hours=args.backfill_hours)
 
 
 def run_backfill(sink, fleet, gateway, args, rng) -> None:
-    step = args.backfill_interval
-    ticks = int((args.backfill_hours * 3600) / step)
-    start = backfill_start(args)
-    now = start
+    """Replay history up to now, one tick per backfill interval.
 
-    LOG.info("backfill: %.1fh at %.0fs resolution, %d ticks", args.backfill_hours, step, ticks)
+    Ticks are generated in memory and sent every --backfill-flush-ticks ticks, so
+    each device's messages travel together in one batch instead of one batch per
+    tick. The state is saved after each send, so it never runs ahead of what the
+    hub has received, and an interrupted backfill resumes from there.
+    """
+    step = args.backfill_interval
+    first = backfill_start(args)
+    if args.resume_backfill:
+        first += timedelta(seconds=step)
+    ticks = int((datetime.now(timezone.utc) - first).total_seconds() // step) + 1
+    if ticks <= 0:
+        LOG.info("backfill: nothing to send, the saved state is already at the present")
+        return
+
+    LOG.info("backfill: %d ticks at %.0fs resolution from %s", ticks, step,
+             first.isoformat(timespec="seconds"))
     describe(fleet, args)
 
+    pending: list[tuple[str, str]] = []
+    now = first
     for tick in range(ticks):
         if SHUTDOWN:
             break
-        now = start + timedelta(seconds=tick * step)
+        now = first + timedelta(seconds=tick * step)
         fleet.advance(step, now=now)
-        sink.send(build_items(fleet, gateway, now,
-                              args.late_fraction, args.malformed_fraction, rng))
-        if tick and tick % 100 == 0:
-            LOG.info("backfill %d/%d ticks, sent=%d", tick, ticks, sink.sent)
+        pending += build_items(fleet, gateway, now, args.late_fraction, args.malformed_fraction, rng)
+        if (tick + 1) % args.backfill_flush_ticks == 0:
+            sink.send(pending)
+            pending = []
             save_state(fleet, args, now)
+            LOG.info("backfill %d/%d ticks, up to %s, sent=%d", tick + 1, ticks,
+                     now.isoformat(timespec="minutes"), sink.sent)
 
+    sink.send(pending)
     save_state(fleet, args, now)
 
 
@@ -327,6 +360,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--interval", type=float, help="override the profile's live interval")
     parser.add_argument("--backfill-hours", type=float, default=6.0)
     parser.add_argument("--backfill-interval", type=float, default=30.0)
+    parser.add_argument("--backfill-flush-ticks", type=int, default=120,
+                        help="ticks generated before each send; larger means fewer, fuller batches")
+    parser.add_argument("--resume-backfill", action="store_true",
+                        help="continue an interrupted backfill from the saved state up to now")
     parser.add_argument("--late-fraction", type=float, default=0.05)
     parser.add_argument("--malformed-fraction", type=float, default=0.01)
     parser.add_argument("--glitch-fraction", type=float, default=0.003,
@@ -341,6 +378,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         args.interval = PROFILES[args.env]["interval"]
     if args.state_file is None:
         args.state_file = f"producer_state_{args.env}.json"
+    if args.resume_backfill and (args.mode != "backfill" or args.fresh_fleet):
+        parser.error("--resume-backfill needs --mode backfill and the saved state (no --fresh-fleet)")
+    if args.resume_backfill and not Path(args.state_file).exists():
+        parser.error(f"--resume-backfill: no saved state at {args.state_file}")
+    if args.backfill_flush_ticks < 1:
+        parser.error("--backfill-flush-ticks must be at least 1")
     return args
 
 
@@ -405,3 +448,6 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+
+
+
