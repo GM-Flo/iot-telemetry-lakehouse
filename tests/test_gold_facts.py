@@ -16,6 +16,8 @@ from src.iot.gold.facts import (
 )
 
 UTC = timezone.utc
+pytestmark = pytest.mark.slow
+
 TRIP_SCHEMA = (
     "trip_id string, vehicle_id string, client_id string, device_id string, driver_id string, "
     "start_ts timestamp, end_ts timestamp, duration_seconds long, distance_km double, gps_distance_km double, "

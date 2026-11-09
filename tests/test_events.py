@@ -25,6 +25,8 @@ from src.iot.silver.events import (
 from src.producer.fleet import Fleet
 from src.producer.registry import select_clients
 
+pytestmark = pytest.mark.slow
+
 T0 = datetime(2026, 11, 6, 8, 0, tzinfo=timezone.utc)
 STOP = 600
 SCHEMA = (

@@ -8,6 +8,9 @@ requires-python = ">=3.10"
 pythonpath = ["."]
 testpaths = ["tests"]
 addopts = "-q --strict-markers"
+markers = [
+    "slow: Spark tests that take minutes in total; CI runs them on main only (deselect with -m \"not slow\")",
+]
 filterwarnings = [
     "ignore::DeprecationWarning",
     "ignore::FutureWarning",

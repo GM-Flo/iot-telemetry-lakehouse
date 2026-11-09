@@ -24,6 +24,8 @@ from src.producer.produce import build_items
 from src.producer.registry import select_clients
 from src.producer.vendors import Gateway
 
+pytestmark = pytest.mark.slow
+
 ROOT = Path(__file__).resolve().parents[1]
 REFERENCE = ROOT / "reference"
 START = datetime(2026, 11, 8, 14, 0, tzinfo=timezone.utc)  # 08:00 local: a working day
