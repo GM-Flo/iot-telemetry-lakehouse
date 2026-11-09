@@ -33,8 +33,12 @@ def pipeline_flow_runs(event_log: DataFrame) -> DataFrame:
 
     A flow reports progress several times per update, once per micro-batch, so
     row counts are summed. AUTO CDC flows report upserted rather than output rows.
+    The platform also logs timing events under internal names such as
+    pipelines.flowTimeMetrics.missingFlowName; those are not flows and are left out.
     """
-    progress = event_log.filter(F.col("event_type") == "flow_progress").select(
+    flow_name = F.col("origin.flow_name")
+    is_flow = flow_name.isNotNull() & ~flow_name.startswith("pipelines.")
+    progress = event_log.filter((F.col("event_type") == "flow_progress") & is_flow).select(
         F.col("origin.update_id").alias("update_id"),
         F.col("origin.flow_name").alias("flow_name"),
         "timestamp",

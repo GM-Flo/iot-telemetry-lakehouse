@@ -104,8 +104,15 @@ if deployer:
 
 # COMMAND ----------
 
+# Whoever runs this setup may read everything in the catalog, never change it. In the
+# deploying principal's environment that principal owns every table, and owning the
+# catalog lets you manage grants but not read tables someone else owns.
+reader = spark.sql("SELECT current_user()").first()[0]
+spark.sql(f"GRANT USE CATALOG, USE SCHEMA, SELECT, EXECUTE, READ VOLUME ON CATALOG {catalog} TO `{reader}`")
+print(f"{reader}: read-only on {catalog}")
+
+# COMMAND ----------
+
 display(spark.sql(f"SHOW SCHEMAS IN {catalog}"))
 if deployer:
     display(spark.sql(f"SHOW GRANTS `{deployer}` ON CATALOG {catalog}"))
-
-

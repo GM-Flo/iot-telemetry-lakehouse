@@ -47,6 +47,7 @@ def event_log(spark):
         flow_event("u1", "quarantine_unparseable_messages", 30, "COMPLETED", rows=10),
         flow_event("u1", "vehicle_measurements", 40, "COMPLETED", upserted=3643),
         flow_event("u1", "device_assignments", 45, "COMPLETED", rows=30, failed=2),
+        flow_event("u1", "pipelines.flowTimeMetrics.missingFlowName", 46, None),
         update_event("u1", 300, "COMPLETED"),
         update_event("u2", 400, "RUNNING"),
         flow_event("u2", "vehicle_measurements", 420, "RUNNING", upserted=5),
@@ -63,6 +64,10 @@ class TestPipelineFlowRuns:
     def test_auto_cdc_flows_report_upserted_rows(self, event_log):
         flows = {r["flow_name"]: r for r in pipeline_flow_runs(event_log).filter("update_id = 'u1'").collect()}
         assert flows["vehicle_measurements"]["rows_written"] == 3643
+
+    def test_internal_platform_events_are_not_flows(self, event_log):
+        names = {r["flow_name"] for r in pipeline_flow_runs(event_log).collect()}
+        assert not any(n.startswith("pipelines.") for n in names)
 
     def test_expectation_failures_are_counted(self, event_log):
         flows = {r["flow_name"]: r for r in pipeline_flow_runs(event_log).filter("update_id = 'u1'").collect()}
