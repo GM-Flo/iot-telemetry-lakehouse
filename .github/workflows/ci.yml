@@ -74,7 +74,8 @@ jobs:
       - run: databricks bundle validate --target prod
 
   deploy-prod:
-    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    # Prod deploys only when started by hand: Actions > CI/CD > Run workflow on main.
+    if: github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch'
     needs: [lint, test, validate]
     runs-on: ubuntu-latest
     environment: prod
