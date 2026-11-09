@@ -43,6 +43,11 @@ targets:
     mode: production
     workspace:
       root_path: /Workspace/Shared/.bundle/${bundle.name}/${bundle.target}
+    # Prod changes only through git and CI/CD, which deploys as a service principal
+    # that then owns every resource. People can see prod, not change it.
+    permissions:
+      - group_name: users
+        level: CAN_VIEW
     presets:
       tags:
         environment: prod

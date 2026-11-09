@@ -2,8 +2,9 @@
 # MAGIC %md
 # MAGIC # 00 · Setup Unity Catalog
 # MAGIC
-# MAGIC One-time setup: external locations, the project catalog, medallion schemas and the
-# MAGIC checkpoint volume. Safe to re-run.
+# MAGIC One-time setup per environment: external locations, the project catalog, medallion
+# MAGIC schemas, the checkpoint and landing volumes, and access for the deploying service
+# MAGIC principal. Safe to re-run.
 # MAGIC
 # MAGIC **Prerequisite:** a storage credential named `iot_lake_cred` created in the UI
 # MAGIC (Catalog → External data → Credentials) from the Terraform `access_connector_id` output.
@@ -11,13 +12,20 @@
 
 # COMMAND ----------
 
-dbutils.widgets.text("storage_account", "iotdevlakexxxxxx", "Storage account")
-dbutils.widgets.text("catalog", "iot_dev", "Catalog")
+dbutils.widgets.text("storage_account", "", "Storage account")
+dbutils.widgets.text("catalog", "", "Catalog")
 dbutils.widgets.text("credential", "iot_lake_cred", "Storage credential")
+dbutils.widgets.text("deployer_principal", "", "Deploying service principal application ID (blank: skip)")
+dbutils.widgets.text("secret_scope", "iot", "Secret scope")
 
-storage_account = dbutils.widgets.get("storage_account")
-catalog = dbutils.widgets.get("catalog")
-credential = dbutils.widgets.get("credential")
+storage_account = dbutils.widgets.get("storage_account").strip()
+catalog = dbutils.widgets.get("catalog").strip()
+credential = dbutils.widgets.get("credential").strip()
+deployer = dbutils.widgets.get("deployer_principal").strip()
+secret_scope = dbutils.widgets.get("secret_scope").strip()
+
+if not storage_account or not catalog:
+    raise ValueError("Fill in the storage_account and catalog widgets.")
 
 
 def abfss(container: str, path: str = "") -> str:
@@ -70,4 +78,22 @@ spark.sql(f"""
 
 # COMMAND ----------
 
+# The service principal that CI/CD deploys with owns and runs this environment's jobs
+# and pipelines. It gets every privilege on this catalog only, and read access to the
+# Event Hubs secrets; you stay the catalog's owner.
+if deployer:
+    if "`" in deployer:
+        raise ValueError(f"not a valid principal: {deployer!r}")
+    spark.sql(f"GRANT ALL PRIVILEGES ON CATALOG {catalog} TO `{deployer}`")
+
+    from databricks.sdk import WorkspaceClient
+    from databricks.sdk.service.workspace import AclPermission
+
+    WorkspaceClient().secrets.put_acl(scope=secret_scope, principal=deployer, permission=AclPermission.READ)
+    print(f"{deployer}: ALL PRIVILEGES on {catalog}, READ on secret scope {secret_scope}")
+
+# COMMAND ----------
+
 display(spark.sql(f"SHOW SCHEMAS IN {catalog}"))
+if deployer:
+    display(spark.sql(f"SHOW GRANTS `{deployer}` ON CATALOG {catalog}"))
