@@ -12,7 +12,7 @@
 
 # COMMAND ----------
 
-dbutils.widgets.text("storage_account", "", "Storage account")
+dbutils.widgets.text("storage_account", "", "Storage account (blank: the one iot_bronze already uses)")
 dbutils.widgets.text("catalog", "", "Catalog")
 dbutils.widgets.text("credential", "iot_lake_cred", "Storage credential")
 dbutils.widgets.text("deployer_principal", "", "Deploying service principal application ID (blank: skip)")
@@ -24,8 +24,17 @@ credential = dbutils.widgets.get("credential").strip()
 deployer = dbutils.widgets.get("deployer_principal").strip()
 secret_scope = dbutils.widgets.get("secret_scope").strip()
 
-if not storage_account or not catalog:
-    raise ValueError("Fill in the storage_account and catalog widgets.")
+if not catalog:
+    raise ValueError("Fill in the catalog widget.")
+
+# The second environment reuses the storage account of the first: read it from the
+# external location the first setup created. Only the very first setup has to name it.
+if not storage_account:
+    existing = [r for r in spark.sql("SHOW EXTERNAL LOCATIONS").collect() if r["name"] == "iot_bronze"]
+    if not existing:
+        raise ValueError("No external location iot_bronze yet: fill in the storage_account widget.")
+    storage_account = existing[0]["url"].split("@", 1)[1].split(".", 1)[0]
+print(f"storage account: {storage_account}")
 
 
 def abfss(container: str, path: str = "") -> str:

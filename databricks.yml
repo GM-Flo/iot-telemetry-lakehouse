@@ -38,6 +38,38 @@ targets:
     variables:
       catalog: iot_dev
       eventhub_secret_key: eventhub-listen-conn-dev
+    # Bootstraps an environment's catalog and gold security. Dev only: it runs as the
+    # admin who starts it, because creating catalogs and granting access needs an admin.
+    #   databricks bundle run setup_environment --params catalog=iot_prod,deployer_principal=<application id>
+    resources:
+      jobs:
+        setup_environment:
+          name: setup_environment
+          description: Creates a catalog with its schemas and volumes, grants the deploying service principal access, and sets up gold security.
+          max_concurrent_runs: 1
+          parameters:
+            - name: catalog
+              default: ""
+            - name: storage_account
+              default: ""
+            - name: deployer_principal
+              default: ""
+          tasks:
+            - task_key: setup_catalog
+              notebook_task:
+                notebook_path: ./notebooks/00_setup_catalog.py
+            - task_key: setup_gold_security
+              depends_on:
+                - task_key: setup_catalog
+              notebook_task:
+                notebook_path: ./notebooks/03_setup_gold_security.py
+            - task_key: grant_pipeline_access
+              depends_on:
+                - task_key: setup_gold_security
+              notebook_task:
+                notebook_path: ./notebooks/03_setup_gold_security.py
+                base_parameters:
+                  admin_principal: "{{job.parameters.deployer_principal}}"
 
   prod:
     mode: production
