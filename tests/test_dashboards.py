@@ -8,6 +8,7 @@ written in SQL as well as Python, is checked against the Python version.
 from __future__ import annotations
 
 import json
+import re
 from datetime import date, datetime, timezone
 from pathlib import Path
 
@@ -27,6 +28,11 @@ DAY1, DAY2 = date(2026, 11, 7), date(2026, 11, 8)
 
 def datasets(file_name: str) -> dict[str, str]:
     return dash.read_datasets(DASHBOARDS / file_name)
+
+
+def local(query: str) -> str:
+    """Point schema-qualified names at the test's temporary views: reference.x -> reference__x."""
+    return re.sub(r"\b(reference|operations)\.", r"\1__", query)
 
 
 VEHICLE_DAY_SCHEMA = (
@@ -56,14 +62,20 @@ def driver_day(driver, key, day, distance, harsh):
 
 
 @pytest.fixture(scope="module")
-def catalog(spark, tmp_path_factory):
-    """gold, reference and operations schemas with real-shaped tables, as the dashboards see them."""
-    location = tmp_path_factory.mktemp("catalog")
-    for schema in ("gold", "reference", "operations"):
-        spark.sql(f"CREATE DATABASE IF NOT EXISTS {schema} LOCATION '{location / schema}'")
+def catalog(spark):
+    """Real-shaped gold, reference and operations tables, as the dashboards see them.
+
+    Held as temporary views, not saved tables: nothing touches the disk, so the
+    test needs no Hadoop setup on Windows. Gold tables keep their bare names,
+    the way the dashboards name them; the rest are renamed by local().
+    """
+    views = []
 
     def save(df, name):
-        df.write.mode("overwrite").saveAsTable(name)
+        schema, table = name.split(".")
+        view = table if schema == "gold" else f"{schema}__{table}"
+        df.localCheckpoint().createOrReplaceTempView(view)
+        views.append(view)
 
     vehicle_days = spark.createDataFrame(
         [vehicle_day("V1", DAY1), vehicle_day("V1", DAY2, critical_seconds=600, after_hours=1),
@@ -128,11 +140,9 @@ def catalog(spark, tmp_path_factory):
     )
     save(operations.pipeline_runs(event_log), "operations.pipeline_runs")
 
-    spark.catalog.setCurrentDatabase("gold")
     yield spark
-    spark.catalog.setCurrentDatabase("default")
-    for schema in ("gold", "reference", "operations"):
-        spark.sql(f"DROP DATABASE IF EXISTS {schema} CASCADE")
+    for view in views:
+        spark.catalog.dropTempView(view)
 
 
 ALL_DATASETS = [(f, name) for f in ("fleet_operations.sql", "platform_health.sql") for name in datasets(f)]
@@ -140,11 +150,11 @@ ALL_DATASETS = [(f, name) for f in ("fleet_operations.sql", "platform_health.sql
 
 @pytest.mark.parametrize("file_name, name", ALL_DATASETS, ids=[n for _, n in ALL_DATASETS])
 def test_every_dataset_runs_on_the_real_schemas(catalog, file_name, name):
-    catalog.sql(datasets(file_name)[name]).collect()
+    catalog.sql(local(datasets(file_name)[name])).collect()
 
 
 def run(catalog, name):
-    return catalog.sql(datasets("fleet_operations.sql")[name]).collect()
+    return catalog.sql(local(datasets("fleet_operations.sql")[name])).collect()
 
 
 def test_each_vehicle_day_has_exactly_one_status_flag(catalog):
@@ -208,7 +218,7 @@ class TestDashboardFiles:
     def test_every_widget_reads_columns_its_dataset_returns(self, catalog, name):
         queries = datasets(f"{name}.sql")
         document = dash.build(dash.DASHBOARD_LAYOUTS[name], queries)
-        returned = {d: set(catalog.sql(queries[d]).columns) for d in {ds for _, ds, _ in dash.widget_fields(document)}}
+        returned = {d: set(catalog.sql(local(queries[d])).columns) for d in {ds for _, ds, _ in dash.widget_fields(document)}}
         for widget, dataset, columns in dash.widget_fields(document):
             assert columns <= returned[dataset], (widget, columns - returned[dataset])
 
