@@ -72,10 +72,19 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - name: Install Databricks CLI
+        # Downloaded through the GitHub API with the workflow's token: anonymous
+        # release downloads are rate limited and time out first.
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          curl -fsSL --retry 6 --retry-delay 15 --retry-all-errors -o "$RUNNER_TEMP/cli.zip" \
-            "https://github.com/databricks/cli/releases/download/v${DATABRICKS_CLI_VERSION}/databricks_cli_${DATABRICKS_CLI_VERSION}_linux_amd64.zip"
-          unzip -q "$RUNNER_TEMP/cli.zip" -d "$RUNNER_TEMP/databricks-cli"
+          asset="databricks_cli_${DATABRICKS_CLI_VERSION}_linux_amd64.zip"
+          for attempt in 1 2 3 4 5; do
+            gh release download "v${DATABRICKS_CLI_VERSION}" --repo databricks/cli \
+              --pattern "$asset" --dir "$RUNNER_TEMP" --clobber && break
+            [ "$attempt" = 5 ] && exit 1
+            sleep $((attempt * 15))
+          done
+          unzip -q "$RUNNER_TEMP/$asset" -d "$RUNNER_TEMP/databricks-cli"
           echo "$RUNNER_TEMP/databricks-cli" >> "$GITHUB_PATH"
       - run: databricks --version
       - run: databricks bundle validate --target dev
@@ -97,10 +106,19 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - name: Install Databricks CLI
+        # Downloaded through the GitHub API with the workflow's token: anonymous
+        # release downloads are rate limited and time out first.
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          curl -fsSL --retry 6 --retry-delay 15 --retry-all-errors -o "$RUNNER_TEMP/cli.zip" \
-            "https://github.com/databricks/cli/releases/download/v${DATABRICKS_CLI_VERSION}/databricks_cli_${DATABRICKS_CLI_VERSION}_linux_amd64.zip"
-          unzip -q "$RUNNER_TEMP/cli.zip" -d "$RUNNER_TEMP/databricks-cli"
+          asset="databricks_cli_${DATABRICKS_CLI_VERSION}_linux_amd64.zip"
+          for attempt in 1 2 3 4 5; do
+            gh release download "v${DATABRICKS_CLI_VERSION}" --repo databricks/cli \
+              --pattern "$asset" --dir "$RUNNER_TEMP" --clobber && break
+            [ "$attempt" = 5 ] && exit 1
+            sleep $((attempt * 15))
+          done
+          unzip -q "$RUNNER_TEMP/$asset" -d "$RUNNER_TEMP/databricks-cli"
           echo "$RUNNER_TEMP/databricks-cli" >> "$GITHUB_PATH"
       - run: databricks --version
       - run: databricks bundle deploy --target prod
