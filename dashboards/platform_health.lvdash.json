@@ -1,0 +1,1242 @@
+{
+  "datasets": [
+    {
+      "name": "reconciliation",
+      "displayName": "reconciliation",
+      "queryLines": [
+        "SELECT\n",
+        "  expected_readings, stored_readings, invalid_readings, mismatched_readings,\n",
+        "  duplicate_readings, conflicting_duplicates, lost_readings, unexpected_readings, checked_at\n",
+        "FROM operations.silver_reconciliation\n"
+      ]
+    },
+    {
+      "name": "pipeline_runs",
+      "displayName": "pipeline_runs",
+      "queryLines": [
+        "SELECT\n",
+        "  started_at, final_state, duration_seconds,\n",
+        "  rows_to_vehicle_measurements, rows_quarantined, expectation_failures\n",
+        "FROM operations.pipeline_runs\n",
+        "ORDER BY started_at DESC\n"
+      ]
+    },
+    {
+      "name": "quarantine_days",
+      "displayName": "quarantine_days",
+      "queryLines": [
+        "SELECT\n",
+        "  CAST(arrival_hour AS DATE) AS arrival_date,\n",
+        "  vendor_id,\n",
+        "  quarantine_stage,\n",
+        "  quarantine_reason,\n",
+        "  SUM(quarantined)           AS quarantined\n",
+        "FROM operations.quarantine_summary_by_hour\n",
+        "GROUP BY ALL\n"
+      ]
+    },
+    {
+      "name": "vendor_days",
+      "displayName": "vendor_days",
+      "queryLines": [
+        "SELECT\n",
+        "  utc_date,\n",
+        "  vendor_id,\n",
+        "  messages_received,\n",
+        "  messages_quarantined,\n",
+        "  readings_stored,\n",
+        "  readings_quarantined,\n",
+        "  message_quarantine_rate,\n",
+        "  reading_quarantine_rate\n",
+        "FROM vendor_data_quality\n"
+      ]
+    },
+    {
+      "name": "vendor_totals",
+      "displayName": "vendor_totals",
+      "queryLines": [
+        "-- Rates over the whole history, recomputed from totals, never averaged per day.\n",
+        "SELECT\n",
+        "  vendor_id,\n",
+        "  SUM(messages_received)                                                  AS messages_received,\n",
+        "  SUM(messages_quarantined)                                               AS messages_quarantined,\n",
+        "  ROUND(SUM(messages_quarantined) / NULLIF(SUM(messages_received), 0), 4) AS message_quarantine_rate,\n",
+        "  SUM(readings_stored)                                                    AS readings_stored,\n",
+        "  SUM(readings_quarantined)                                               AS readings_quarantined,\n",
+        "  ROUND(SUM(readings_quarantined)\n",
+        "        / NULLIF(SUM(readings_stored) + SUM(readings_quarantined), 0), 4) AS reading_quarantine_rate\n",
+        "FROM vendor_data_quality\n",
+        "GROUP BY vendor_id\n",
+        "ORDER BY reading_quarantine_rate DESC\n"
+      ]
+    },
+    {
+      "name": "billing_days",
+      "displayName": "billing_days",
+      "queryLines": [
+        "SELECT local_date, client_id, client_name, vendor_id, billable_devices, messages_received\n",
+        "FROM platform_billing\n",
+        "ORDER BY local_date DESC, client_id\n"
+      ]
+    }
+  ],
+  "pages": [
+    {
+      "name": "pipeline",
+      "displayName": "Pipeline",
+      "pageType": "PAGE_TYPE_CANVAS",
+      "layout": [
+        {
+          "widget": {
+            "name": "pipeline_0_0",
+            "multilineTextboxSpec": {
+              "lines": [
+                "# Pipeline"
+              ]
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 0,
+            "width": 6,
+            "height": 1
+          }
+        },
+        {
+          "widget": {
+            "name": "pipeline_1_0",
+            "multilineTextboxSpec": {
+              "lines": [
+                "Every reading must end up stored or quarantined: **lost** and **unexpected** must be 0. Conflicting duplicates are two different readings claiming the same device and instant, usually a vendor sending timestamps rounded to the second."
+              ]
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 1,
+            "width": 6,
+            "height": 1
+          }
+        },
+        {
+          "widget": {
+            "name": "pipeline_2_0",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "reconciliation",
+                  "fields": [
+                    {
+                      "name": "lost_readings",
+                      "expression": "`lost_readings`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "lost_readings",
+                  "displayName": "Lost",
+                  "format": {
+                    "type": "number",
+                    "decimalPlaces": {
+                      "type": "max",
+                      "places": 0
+                    }
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Lost readings"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 2,
+            "width": 2,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "pipeline_2_1",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "reconciliation",
+                  "fields": [
+                    {
+                      "name": "unexpected_readings",
+                      "expression": "`unexpected_readings`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "unexpected_readings",
+                  "displayName": "Unexpected",
+                  "format": {
+                    "type": "number",
+                    "decimalPlaces": {
+                      "type": "max",
+                      "places": 0
+                    }
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Unexpected readings"
+              }
+            }
+          },
+          "position": {
+            "x": 2,
+            "y": 2,
+            "width": 2,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "pipeline_2_2",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "reconciliation",
+                  "fields": [
+                    {
+                      "name": "conflicting_duplicates",
+                      "expression": "`conflicting_duplicates`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "conflicting_duplicates",
+                  "displayName": "Conflicting",
+                  "format": {
+                    "type": "number",
+                    "decimalPlaces": {
+                      "type": "max",
+                      "places": 0
+                    }
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Conflicting duplicates"
+              }
+            }
+          },
+          "position": {
+            "x": 4,
+            "y": 2,
+            "width": 2,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "pipeline_3_0",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "reconciliation",
+                  "fields": [
+                    {
+                      "name": "stored_readings",
+                      "expression": "`stored_readings`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "stored_readings",
+                  "displayName": "Stored",
+                  "format": {
+                    "type": "number",
+                    "decimalPlaces": {
+                      "type": "max",
+                      "places": 0
+                    }
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Readings stored"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 5,
+            "width": 2,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "pipeline_3_1",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "reconciliation",
+                  "fields": [
+                    {
+                      "name": "invalid_readings",
+                      "expression": "`invalid_readings`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "invalid_readings",
+                  "displayName": "Invalid",
+                  "format": {
+                    "type": "number",
+                    "decimalPlaces": {
+                      "type": "max",
+                      "places": 0
+                    }
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Readings with impossible values"
+              }
+            }
+          },
+          "position": {
+            "x": 2,
+            "y": 5,
+            "width": 2,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "pipeline_3_2",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "reconciliation",
+                  "fields": [
+                    {
+                      "name": "mismatched_readings",
+                      "expression": "`mismatched_readings`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "mismatched_readings",
+                  "displayName": "Mismatched",
+                  "format": {
+                    "type": "number",
+                    "decimalPlaces": {
+                      "type": "max",
+                      "places": 0
+                    }
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Readings the registry rejects"
+              }
+            }
+          },
+          "position": {
+            "x": 4,
+            "y": 5,
+            "width": 2,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "pipeline_4_0",
+            "queries": [
+              {
+                "name": "quarantine_days_arrival_date",
+                "query": {
+                  "datasetName": "quarantine_days",
+                  "fields": [
+                    {
+                      "name": "arrival_date",
+                      "expression": "`arrival_date`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "filter-date-range-picker",
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "arrival_date",
+                    "displayName": "Days",
+                    "queryName": "quarantine_days_arrival_date"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Days"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 8,
+            "width": 2,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "pipeline_4_1",
+            "queries": [
+              {
+                "name": "quarantine_days_vendor_id",
+                "query": {
+                  "datasetName": "quarantine_days",
+                  "fields": [
+                    {
+                      "name": "vendor_id",
+                      "expression": "`vendor_id`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "filter-multi-select",
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "vendor_id",
+                    "displayName": "Vendor",
+                    "queryName": "quarantine_days_vendor_id"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Vendor"
+              }
+            }
+          },
+          "position": {
+            "x": 2,
+            "y": 8,
+            "width": 2,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "pipeline_4_2",
+            "queries": [
+              {
+                "name": "quarantine_days_quarantine_stage",
+                "query": {
+                  "datasetName": "quarantine_days",
+                  "fields": [
+                    {
+                      "name": "quarantine_stage",
+                      "expression": "`quarantine_stage`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "filter-multi-select",
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "quarantine_stage",
+                    "displayName": "Stage",
+                    "queryName": "quarantine_days_quarantine_stage"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Stage"
+              }
+            }
+          },
+          "position": {
+            "x": 4,
+            "y": 8,
+            "width": 2,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "pipeline_5_0",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "quarantine_days",
+                  "fields": [
+                    {
+                      "name": "arrival_date",
+                      "expression": "`arrival_date`"
+                    },
+                    {
+                      "name": "sum(quarantined)",
+                      "expression": "SUM(`quarantined`)"
+                    },
+                    {
+                      "name": "quarantine_reason",
+                      "expression": "`quarantine_reason`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "arrival_date",
+                  "displayName": "Day",
+                  "scale": {
+                    "type": "temporal"
+                  }
+                },
+                "y": {
+                  "fieldName": "sum(quarantined)",
+                  "displayName": "Quarantined",
+                  "scale": {
+                    "type": "quantitative"
+                  }
+                },
+                "color": {
+                  "fieldName": "quarantine_reason",
+                  "displayName": "Reason",
+                  "scale": {
+                    "type": "categorical"
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Quarantined per day, by reason"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 10,
+            "width": 6,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "pipeline_6_0",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "pipeline_runs",
+                  "fields": [
+                    {
+                      "name": "started_at",
+                      "expression": "`started_at`"
+                    },
+                    {
+                      "name": "final_state",
+                      "expression": "`final_state`"
+                    },
+                    {
+                      "name": "duration_seconds",
+                      "expression": "`duration_seconds`"
+                    },
+                    {
+                      "name": "rows_to_vehicle_measurements",
+                      "expression": "`rows_to_vehicle_measurements`"
+                    },
+                    {
+                      "name": "rows_quarantined",
+                      "expression": "`rows_quarantined`"
+                    },
+                    {
+                      "name": "expectation_failures",
+                      "expression": "`expectation_failures`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "table",
+              "encodings": {
+                "columns": [
+                  {
+                    "fieldName": "started_at",
+                    "displayName": "Started"
+                  },
+                  {
+                    "fieldName": "final_state",
+                    "displayName": "State"
+                  },
+                  {
+                    "fieldName": "duration_seconds",
+                    "displayName": "Seconds",
+                    "format": {
+                      "type": "number",
+                      "decimalPlaces": {
+                        "type": "max",
+                        "places": 0
+                      }
+                    }
+                  },
+                  {
+                    "fieldName": "rows_to_vehicle_measurements",
+                    "displayName": "Readings stored",
+                    "format": {
+                      "type": "number",
+                      "decimalPlaces": {
+                        "type": "max",
+                        "places": 0
+                      }
+                    }
+                  },
+                  {
+                    "fieldName": "rows_quarantined",
+                    "displayName": "Rows quarantined",
+                    "format": {
+                      "type": "number",
+                      "decimalPlaces": {
+                        "type": "max",
+                        "places": 0
+                      }
+                    }
+                  },
+                  {
+                    "fieldName": "expectation_failures",
+                    "displayName": "Expectation failures",
+                    "format": {
+                      "type": "number",
+                      "decimalPlaces": {
+                        "type": "max",
+                        "places": 0
+                      }
+                    }
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Silver pipeline runs, newest first"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 16,
+            "width": 6,
+            "height": 6
+          }
+        }
+      ]
+    },
+    {
+      "name": "vendors_billing",
+      "displayName": "Vendors & billing",
+      "pageType": "PAGE_TYPE_CANVAS",
+      "layout": [
+        {
+          "widget": {
+            "name": "vendors_billing_0_0",
+            "multilineTextboxSpec": {
+              "lines": [
+                "# Vendors & billing"
+              ]
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 0,
+            "width": 6,
+            "height": 1
+          }
+        },
+        {
+          "widget": {
+            "name": "vendors_billing_1_0",
+            "multilineTextboxSpec": {
+              "lines": [
+                "Which vendor sends data we cannot use, and how many devices each client is billed for: a device is billable on a day it sent at least one message."
+              ]
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 1,
+            "width": 6,
+            "height": 1
+          }
+        },
+        {
+          "widget": {
+            "name": "vendors_billing_2_0",
+            "queries": [
+              {
+                "name": "vendor_days_utc_date",
+                "query": {
+                  "datasetName": "vendor_days",
+                  "fields": [
+                    {
+                      "name": "utc_date",
+                      "expression": "`utc_date`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "filter-date-range-picker",
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "utc_date",
+                    "displayName": "Days (vendors, UTC)",
+                    "queryName": "vendor_days_utc_date"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Days (vendors, UTC)"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 2,
+            "width": 2,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "vendors_billing_2_1",
+            "queries": [
+              {
+                "name": "billing_days_local_date",
+                "query": {
+                  "datasetName": "billing_days",
+                  "fields": [
+                    {
+                      "name": "local_date",
+                      "expression": "`local_date`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "filter-date-range-picker",
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "local_date",
+                    "displayName": "Days (billing)",
+                    "queryName": "billing_days_local_date"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Days (billing)"
+              }
+            }
+          },
+          "position": {
+            "x": 2,
+            "y": 2,
+            "width": 2,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "vendors_billing_2_2",
+            "queries": [
+              {
+                "name": "vendor_days_vendor_id",
+                "query": {
+                  "datasetName": "vendor_days",
+                  "fields": [
+                    {
+                      "name": "vendor_id",
+                      "expression": "`vendor_id`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "vendor_totals_vendor_id",
+                "query": {
+                  "datasetName": "vendor_totals",
+                  "fields": [
+                    {
+                      "name": "vendor_id",
+                      "expression": "`vendor_id`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "billing_days_vendor_id",
+                "query": {
+                  "datasetName": "billing_days",
+                  "fields": [
+                    {
+                      "name": "vendor_id",
+                      "expression": "`vendor_id`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "filter-multi-select",
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "vendor_id",
+                    "displayName": "Vendor",
+                    "queryName": "vendor_days_vendor_id"
+                  },
+                  {
+                    "fieldName": "vendor_id",
+                    "displayName": "Vendor",
+                    "queryName": "vendor_totals_vendor_id"
+                  },
+                  {
+                    "fieldName": "vendor_id",
+                    "displayName": "Vendor",
+                    "queryName": "billing_days_vendor_id"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Vendor"
+              }
+            }
+          },
+          "position": {
+            "x": 4,
+            "y": 2,
+            "width": 2,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "vendors_billing_3_0",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "vendor_totals",
+                  "fields": [
+                    {
+                      "name": "vendor_id",
+                      "expression": "`vendor_id`"
+                    },
+                    {
+                      "name": "messages_received",
+                      "expression": "`messages_received`"
+                    },
+                    {
+                      "name": "message_quarantine_rate",
+                      "expression": "`message_quarantine_rate`"
+                    },
+                    {
+                      "name": "readings_stored",
+                      "expression": "`readings_stored`"
+                    },
+                    {
+                      "name": "reading_quarantine_rate",
+                      "expression": "`reading_quarantine_rate`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "table",
+              "encodings": {
+                "columns": [
+                  {
+                    "fieldName": "vendor_id",
+                    "displayName": "Vendor"
+                  },
+                  {
+                    "fieldName": "messages_received",
+                    "displayName": "Messages received",
+                    "format": {
+                      "type": "number",
+                      "decimalPlaces": {
+                        "type": "max",
+                        "places": 0
+                      }
+                    }
+                  },
+                  {
+                    "fieldName": "message_quarantine_rate",
+                    "displayName": "Messages quarantined",
+                    "format": {
+                      "type": "number-percent",
+                      "decimalPlaces": {
+                        "type": "max",
+                        "places": 1
+                      }
+                    }
+                  },
+                  {
+                    "fieldName": "readings_stored",
+                    "displayName": "Readings stored",
+                    "format": {
+                      "type": "number",
+                      "decimalPlaces": {
+                        "type": "max",
+                        "places": 0
+                      }
+                    }
+                  },
+                  {
+                    "fieldName": "reading_quarantine_rate",
+                    "displayName": "Readings quarantined",
+                    "format": {
+                      "type": "number-percent",
+                      "decimalPlaces": {
+                        "type": "max",
+                        "places": 1
+                      }
+                    }
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Data quality per vendor, worst first"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 4,
+            "width": 6,
+            "height": 4
+          }
+        },
+        {
+          "widget": {
+            "name": "vendors_billing_4_0",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "vendor_days",
+                  "fields": [
+                    {
+                      "name": "utc_date",
+                      "expression": "`utc_date`"
+                    },
+                    {
+                      "name": "sum(messages_received)",
+                      "expression": "SUM(`messages_received`)"
+                    },
+                    {
+                      "name": "vendor_id",
+                      "expression": "`vendor_id`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "utc_date",
+                  "displayName": "Day",
+                  "scale": {
+                    "type": "temporal"
+                  }
+                },
+                "y": {
+                  "fieldName": "sum(messages_received)",
+                  "displayName": "Messages",
+                  "scale": {
+                    "type": "quantitative"
+                  }
+                },
+                "color": {
+                  "fieldName": "vendor_id",
+                  "displayName": "Vendor",
+                  "scale": {
+                    "type": "categorical"
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Messages per day, by vendor"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 8,
+            "width": 3,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "vendors_billing_4_1",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "billing_days",
+                  "fields": [
+                    {
+                      "name": "local_date",
+                      "expression": "`local_date`"
+                    },
+                    {
+                      "name": "sum(billable_devices)",
+                      "expression": "SUM(`billable_devices`)"
+                    },
+                    {
+                      "name": "client_id",
+                      "expression": "`client_id`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "local_date",
+                  "displayName": "Day",
+                  "scale": {
+                    "type": "temporal"
+                  }
+                },
+                "y": {
+                  "fieldName": "sum(billable_devices)",
+                  "displayName": "Devices",
+                  "scale": {
+                    "type": "quantitative"
+                  }
+                },
+                "color": {
+                  "fieldName": "client_id",
+                  "displayName": "Client",
+                  "scale": {
+                    "type": "categorical"
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Billable devices per day, by client"
+              }
+            }
+          },
+          "position": {
+            "x": 3,
+            "y": 8,
+            "width": 3,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "vendors_billing_5_0",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "billing_days",
+                  "fields": [
+                    {
+                      "name": "local_date",
+                      "expression": "`local_date`"
+                    },
+                    {
+                      "name": "client_id",
+                      "expression": "`client_id`"
+                    },
+                    {
+                      "name": "client_name",
+                      "expression": "`client_name`"
+                    },
+                    {
+                      "name": "vendor_id",
+                      "expression": "`vendor_id`"
+                    },
+                    {
+                      "name": "billable_devices",
+                      "expression": "`billable_devices`"
+                    },
+                    {
+                      "name": "messages_received",
+                      "expression": "`messages_received`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "table",
+              "encodings": {
+                "columns": [
+                  {
+                    "fieldName": "local_date",
+                    "displayName": "Day"
+                  },
+                  {
+                    "fieldName": "client_id",
+                    "displayName": "Client"
+                  },
+                  {
+                    "fieldName": "client_name",
+                    "displayName": "Name"
+                  },
+                  {
+                    "fieldName": "vendor_id",
+                    "displayName": "Vendor"
+                  },
+                  {
+                    "fieldName": "billable_devices",
+                    "displayName": "Billable devices",
+                    "format": {
+                      "type": "number",
+                      "decimalPlaces": {
+                        "type": "max",
+                        "places": 0
+                      }
+                    }
+                  },
+                  {
+                    "fieldName": "messages_received",
+                    "displayName": "Messages",
+                    "format": {
+                      "type": "number",
+                      "decimalPlaces": {
+                        "type": "max",
+                        "places": 0
+                      }
+                    }
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Billing per client per day"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 14,
+            "width": 6,
+            "height": 5
+          }
+        }
+      ]
+    }
+  ]
+}

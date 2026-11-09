@@ -23,6 +23,10 @@ variables:
   node_type:
     description: Job cluster VM size. Must fit the subscription's 4-vCPU family quota.
     default: Standard_D4ds_v4
+  warehouse_id:
+    description: SQL warehouse that runs the dashboards' queries, looked up by name.
+    lookup:
+      warehouse: Serverless Starter Warehouse
 
 targets:
   dev:

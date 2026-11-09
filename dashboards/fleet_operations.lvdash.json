@@ -1,0 +1,2708 @@
+{
+  "datasets": [
+    {
+      "name": "vehicle_days",
+      "displayName": "vehicle_days",
+      "queryLines": [
+        "SELECT\n",
+        "  local_date,\n",
+        "  client_id,\n",
+        "  vehicle_id,\n",
+        "  make,\n",
+        "  model,\n",
+        "  health_status,\n",
+        "  CASE WHEN health_status = 'critical'  THEN 1 ELSE 0 END AS is_critical,\n",
+        "  CASE WHEN health_status = 'attention' THEN 1 ELSE 0 END AS is_attention,\n",
+        "  CASE WHEN health_status = 'ok'        THEN 1 ELSE 0 END AS is_ok,\n",
+        "  minutes_above_warning_temperature,\n",
+        "  minutes_above_critical_temperature,\n",
+        "  distinct_fault_codes,\n",
+        "  distinct_high_severity_codes,\n",
+        "  max_engine_temperature_celsius\n",
+        "FROM vehicle_health\n"
+      ]
+    },
+    {
+      "name": "vehicles_needing_action",
+      "displayName": "vehicles_needing_action",
+      "queryLines": [
+        "SELECT\n",
+        "  local_date,\n",
+        "  client_id,\n",
+        "  vehicle_id,\n",
+        "  vin,\n",
+        "  make,\n",
+        "  model,\n",
+        "  health_status,\n",
+        "  minutes_above_critical_temperature,\n",
+        "  minutes_above_warning_temperature,\n",
+        "  distinct_high_severity_codes,\n",
+        "  distinct_fault_codes,\n",
+        "  max_engine_temperature_celsius\n",
+        "FROM vehicle_health\n",
+        "WHERE health_status <> 'ok'\n",
+        "ORDER BY local_date DESC,\n",
+        "         CASE health_status WHEN 'critical' THEN 1 ELSE 2 END,\n",
+        "         minutes_above_critical_temperature DESC,\n",
+        "         minutes_above_warning_temperature DESC\n"
+      ]
+    },
+    {
+      "name": "driver_days",
+      "displayName": "driver_days",
+      "queryLines": [
+        "SELECT\n",
+        "  local_date,\n",
+        "  client_id,\n",
+        "  driver_id,\n",
+        "  COALESCE(driver_name, 'No registered driver') AS driver_name,\n",
+        "  is_unknown_driver,\n",
+        "  CASE WHEN is_unknown_driver THEN distance_km ELSE 0 END AS km_without_registered_driver,\n",
+        "  trips,\n",
+        "  distance_km,\n",
+        "  driving_hours,\n",
+        "  harsh_brakes + harsh_accelerations AS harsh_events,\n",
+        "  harsh_brakes,\n",
+        "  harsh_accelerations,\n",
+        "  speeding_minutes,\n",
+        "  after_hours_trips\n",
+        "FROM driver_safety\n"
+      ]
+    },
+    {
+      "name": "driver_scores",
+      "displayName": "driver_scores",
+      "queryLines": [
+        "-- One row per driver over the whole history. The score is recomputed from the\n",
+        "-- totals, never averaged from daily scores: a 3 km day must not weigh as much as\n",
+        "-- a 300 km day. Weights come from the thresholds table the pipeline uses.\n",
+        "WITH weights AS (\n",
+        "  SELECT\n",
+        "    MAX(CASE WHEN threshold_name = 'safety_harsh_event_weight'     THEN value END) AS harsh_weight,\n",
+        "    MAX(CASE WHEN threshold_name = 'safety_speeding_minute_weight' THEN value END) AS speeding_weight,\n",
+        "    MAX(CASE WHEN threshold_name = 'safety_minimum_distance'       THEN value END) AS minimum_distance_km\n",
+        "  FROM reference.anomaly_thresholds\n",
+        "),\n",
+        "totals AS (\n",
+        "  SELECT\n",
+        "    driver_id,\n",
+        "    client_id,\n",
+        "    COALESCE(MAX(driver_name), 'No registered driver') AS driver_name,\n",
+        "    BOOL_OR(is_unknown_driver)                         AS is_unknown_driver,\n",
+        "    SUM(trips)                                         AS trips,\n",
+        "    SUM(distance_km)                                   AS distance_km,\n",
+        "    SUM(harsh_brakes + harsh_accelerations)            AS harsh_events,\n",
+        "    SUM(speeding_minutes)                              AS speeding_minutes,\n",
+        "    SUM(after_hours_trips)                             AS after_hours_trips\n",
+        "  FROM driver_safety\n",
+        "  GROUP BY driver_id, client_id\n",
+        "),\n",
+        "scored AS (\n",
+        "  SELECT\n",
+        "    t.*,\n",
+        "    ROUND(t.harsh_events / NULLIF(t.distance_km, 0) * 100, 2)     AS harsh_events_per_100_km,\n",
+        "    ROUND(t.speeding_minutes / NULLIF(t.distance_km, 0) * 100, 2) AS speeding_minutes_per_100_km,\n",
+        "    CASE WHEN NOT t.is_unknown_driver AND t.distance_km >= w.minimum_distance_km THEN ROUND(GREATEST(0,\n",
+        "      100 - w.harsh_weight * t.harsh_events / t.distance_km * 100\n",
+        "          - w.speeding_weight * t.speeding_minutes / t.distance_km * 100), 1) END AS safety_score\n",
+        "  FROM totals t\n",
+        "  CROSS JOIN weights w\n",
+        ")\n",
+        "SELECT\n",
+        "  *,\n",
+        "  CASE WHEN safety_score < 60 THEN 1 ELSE 0 END AS is_below_60\n",
+        "FROM scored\n",
+        "ORDER BY safety_score ASC NULLS LAST\n"
+      ]
+    },
+    {
+      "name": "client_safety_scores",
+      "displayName": "client_safety_scores",
+      "queryLines": [
+        "-- Each client's score: its drivers' scores weighted by distance, over the whole\n",
+        "-- history. A fleet manager sees their own client only, so the counter is exact.\n",
+        "WITH weights AS (\n",
+        "  SELECT\n",
+        "    MAX(CASE WHEN threshold_name = 'safety_harsh_event_weight'     THEN value END) AS harsh_weight,\n",
+        "    MAX(CASE WHEN threshold_name = 'safety_speeding_minute_weight' THEN value END) AS speeding_weight,\n",
+        "    MAX(CASE WHEN threshold_name = 'safety_minimum_distance'       THEN value END) AS minimum_distance_km\n",
+        "  FROM reference.anomaly_thresholds\n",
+        "),\n",
+        "totals AS (\n",
+        "  SELECT\n",
+        "    driver_id,\n",
+        "    client_id,\n",
+        "    SUM(distance_km)                        AS distance_km,\n",
+        "    SUM(harsh_brakes + harsh_accelerations) AS harsh_events,\n",
+        "    SUM(speeding_minutes)                   AS speeding_minutes\n",
+        "  FROM driver_safety\n",
+        "  WHERE NOT is_unknown_driver\n",
+        "  GROUP BY driver_id, client_id\n",
+        "),\n",
+        "scored AS (\n",
+        "  SELECT\n",
+        "    t.client_id,\n",
+        "    t.distance_km,\n",
+        "    GREATEST(0,\n",
+        "      100 - w.harsh_weight * t.harsh_events / t.distance_km * 100\n",
+        "          - w.speeding_weight * t.speeding_minutes / t.distance_km * 100) AS safety_score\n",
+        "  FROM totals t\n",
+        "  CROSS JOIN weights w\n",
+        "  WHERE t.distance_km >= w.minimum_distance_km\n",
+        ")\n",
+        "SELECT\n",
+        "  client_id,\n",
+        "  ROUND(SUM(safety_score * distance_km) / NULLIF(SUM(distance_km), 0), 1) AS fleet_safety_score\n",
+        "FROM scored\n",
+        "GROUP BY client_id\n"
+      ]
+    },
+    {
+      "name": "client_cost_days",
+      "displayName": "client_cost_days",
+      "queryLines": [
+        "SELECT\n",
+        "  local_date,\n",
+        "  client_id,\n",
+        "  fuel_cost_usd,\n",
+        "  ROUND(fuel_cost_usd - idle_cost_usd, 2) AS driving_fuel_cost_usd,\n",
+        "  idle_cost_usd,\n",
+        "  distance_km,\n",
+        "  driving_hours,\n",
+        "  idle_hours,\n",
+        "  vehicles_active,\n",
+        "  vehicles_reporting,\n",
+        "  fuel_cost_per_km_usd,\n",
+        "  idle_cost_share\n",
+        "FROM fleet_cost_utilization\n",
+        "ORDER BY local_date DESC, client_id\n"
+      ]
+    },
+    {
+      "name": "misuse_days",
+      "displayName": "misuse_days",
+      "queryLines": [
+        "SELECT\n",
+        "  local_date,\n",
+        "  client_id,\n",
+        "  vehicle_id,\n",
+        "  after_hours_trips,\n",
+        "  after_hours_distance_km,\n",
+        "  geofence_exits,\n",
+        "  trips_without_registered_driver\n",
+        "FROM security_misuse\n",
+        "ORDER BY local_date DESC, after_hours_trips + geofence_exits + trips_without_registered_driver DESC\n"
+      ]
+    },
+    {
+      "name": "misuse_by_kind",
+      "displayName": "misuse_by_kind",
+      "queryLines": [
+        "-- The three kinds of case as rows, so one chart can colour them.\n",
+        "SELECT local_date, client_id, vehicle_id, kind, cases\n",
+        "FROM security_misuse\n",
+        "LATERAL VIEW STACK(3,\n",
+        "  'After-hours trip',     after_hours_trips,\n",
+        "  'Geofence exit',        geofence_exits,\n",
+        "  'No registered driver', trips_without_registered_driver\n",
+        ") k AS kind, cases\n",
+        "WHERE cases > 0\n"
+      ]
+    }
+  ],
+  "pages": [
+    {
+      "name": "vehicle_health",
+      "displayName": "Vehicle health",
+      "pageType": "PAGE_TYPE_CANVAS",
+      "layout": [
+        {
+          "widget": {
+            "name": "vehicle_health_0_0",
+            "multilineTextboxSpec": {
+              "lines": [
+                "# Vehicle health"
+              ]
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 0,
+            "width": 6,
+            "height": 1
+          }
+        },
+        {
+          "widget": {
+            "name": "vehicle_health_1_0",
+            "multilineTextboxSpec": {
+              "lines": [
+                "Which vehicles need the workshop, and is the fleet getting better or worse? **Critical**: five minutes or more above the critical engine temperature, or a high-severity fault code. **Attention**: ten minutes or more above the warning temperature, or any fault code. Counters show the latest day; the line under each is its trend."
+              ]
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 1,
+            "width": 6,
+            "height": 1
+          }
+        },
+        {
+          "widget": {
+            "name": "vehicle_health_2_0",
+            "queries": [
+              {
+                "name": "vehicle_days_local_date",
+                "query": {
+                  "datasetName": "vehicle_days",
+                  "fields": [
+                    {
+                      "name": "local_date",
+                      "expression": "`local_date`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "vehicles_needing_action_local_date",
+                "query": {
+                  "datasetName": "vehicles_needing_action",
+                  "fields": [
+                    {
+                      "name": "local_date",
+                      "expression": "`local_date`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "filter-date-range-picker",
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "local_date",
+                    "displayName": "Days",
+                    "queryName": "vehicle_days_local_date"
+                  },
+                  {
+                    "fieldName": "local_date",
+                    "displayName": "Days",
+                    "queryName": "vehicles_needing_action_local_date"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Days"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 2,
+            "width": 2,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "vehicle_health_2_1",
+            "queries": [
+              {
+                "name": "vehicle_days_client_id",
+                "query": {
+                  "datasetName": "vehicle_days",
+                  "fields": [
+                    {
+                      "name": "client_id",
+                      "expression": "`client_id`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "vehicles_needing_action_client_id",
+                "query": {
+                  "datasetName": "vehicles_needing_action",
+                  "fields": [
+                    {
+                      "name": "client_id",
+                      "expression": "`client_id`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "filter-multi-select",
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "client_id",
+                    "displayName": "Client",
+                    "queryName": "vehicle_days_client_id"
+                  },
+                  {
+                    "fieldName": "client_id",
+                    "displayName": "Client",
+                    "queryName": "vehicles_needing_action_client_id"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Client"
+              }
+            }
+          },
+          "position": {
+            "x": 2,
+            "y": 2,
+            "width": 2,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "vehicle_health_2_2",
+            "queries": [
+              {
+                "name": "vehicle_days_vehicle_id",
+                "query": {
+                  "datasetName": "vehicle_days",
+                  "fields": [
+                    {
+                      "name": "vehicle_id",
+                      "expression": "`vehicle_id`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "vehicles_needing_action_vehicle_id",
+                "query": {
+                  "datasetName": "vehicles_needing_action",
+                  "fields": [
+                    {
+                      "name": "vehicle_id",
+                      "expression": "`vehicle_id`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "filter-multi-select",
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "vehicle_id",
+                    "displayName": "Vehicle",
+                    "queryName": "vehicle_days_vehicle_id"
+                  },
+                  {
+                    "fieldName": "vehicle_id",
+                    "displayName": "Vehicle",
+                    "queryName": "vehicles_needing_action_vehicle_id"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Vehicle"
+              }
+            }
+          },
+          "position": {
+            "x": 4,
+            "y": 2,
+            "width": 2,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "vehicle_health_3_0",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "vehicle_days",
+                  "fields": [
+                    {
+                      "name": "sum(is_critical)",
+                      "expression": "SUM(`is_critical`)"
+                    },
+                    {
+                      "name": "daily(local_date)",
+                      "expression": "DATE_TRUNC(\"DAY\", `local_date`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "sum(is_critical)",
+                  "displayName": "Critical vehicles",
+                  "format": {
+                    "type": "number",
+                    "decimalPlaces": {
+                      "type": "max",
+                      "places": 0
+                    }
+                  }
+                },
+                "period": {
+                  "fieldName": "daily(local_date)"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Critical vehicles"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 4,
+            "width": 2,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "vehicle_health_3_1",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "vehicle_days",
+                  "fields": [
+                    {
+                      "name": "sum(is_attention)",
+                      "expression": "SUM(`is_attention`)"
+                    },
+                    {
+                      "name": "daily(local_date)",
+                      "expression": "DATE_TRUNC(\"DAY\", `local_date`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "sum(is_attention)",
+                  "displayName": "Vehicles needing attention",
+                  "format": {
+                    "type": "number",
+                    "decimalPlaces": {
+                      "type": "max",
+                      "places": 0
+                    }
+                  }
+                },
+                "period": {
+                  "fieldName": "daily(local_date)"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Vehicles needing attention"
+              }
+            }
+          },
+          "position": {
+            "x": 2,
+            "y": 4,
+            "width": 2,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "vehicle_health_3_2",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "vehicle_days",
+                  "fields": [
+                    {
+                      "name": "sum(is_ok)",
+                      "expression": "SUM(`is_ok`)"
+                    },
+                    {
+                      "name": "daily(local_date)",
+                      "expression": "DATE_TRUNC(\"DAY\", `local_date`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "sum(is_ok)",
+                  "displayName": "Healthy vehicles",
+                  "format": {
+                    "type": "number",
+                    "decimalPlaces": {
+                      "type": "max",
+                      "places": 0
+                    }
+                  }
+                },
+                "period": {
+                  "fieldName": "daily(local_date)"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Healthy vehicles"
+              }
+            }
+          },
+          "position": {
+            "x": 4,
+            "y": 4,
+            "width": 2,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "vehicle_health_4_0",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "vehicles_needing_action",
+                  "fields": [
+                    {
+                      "name": "local_date",
+                      "expression": "`local_date`"
+                    },
+                    {
+                      "name": "vehicle_id",
+                      "expression": "`vehicle_id`"
+                    },
+                    {
+                      "name": "vin",
+                      "expression": "`vin`"
+                    },
+                    {
+                      "name": "make",
+                      "expression": "`make`"
+                    },
+                    {
+                      "name": "model",
+                      "expression": "`model`"
+                    },
+                    {
+                      "name": "health_status",
+                      "expression": "`health_status`"
+                    },
+                    {
+                      "name": "minutes_above_critical_temperature",
+                      "expression": "`minutes_above_critical_temperature`"
+                    },
+                    {
+                      "name": "minutes_above_warning_temperature",
+                      "expression": "`minutes_above_warning_temperature`"
+                    },
+                    {
+                      "name": "distinct_high_severity_codes",
+                      "expression": "`distinct_high_severity_codes`"
+                    },
+                    {
+                      "name": "distinct_fault_codes",
+                      "expression": "`distinct_fault_codes`"
+                    },
+                    {
+                      "name": "max_engine_temperature_celsius",
+                      "expression": "`max_engine_temperature_celsius`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "table",
+              "encodings": {
+                "columns": [
+                  {
+                    "fieldName": "local_date",
+                    "displayName": "Day"
+                  },
+                  {
+                    "fieldName": "vehicle_id",
+                    "displayName": "Vehicle"
+                  },
+                  {
+                    "fieldName": "vin",
+                    "displayName": "VIN"
+                  },
+                  {
+                    "fieldName": "make",
+                    "displayName": "Make"
+                  },
+                  {
+                    "fieldName": "model",
+                    "displayName": "Model"
+                  },
+                  {
+                    "fieldName": "health_status",
+                    "displayName": "Status"
+                  },
+                  {
+                    "fieldName": "minutes_above_critical_temperature",
+                    "displayName": "Minutes above critical",
+                    "format": {
+                      "type": "number",
+                      "decimalPlaces": {
+                        "type": "max",
+                        "places": 1
+                      }
+                    }
+                  },
+                  {
+                    "fieldName": "minutes_above_warning_temperature",
+                    "displayName": "Minutes above warning",
+                    "format": {
+                      "type": "number",
+                      "decimalPlaces": {
+                        "type": "max",
+                        "places": 1
+                      }
+                    }
+                  },
+                  {
+                    "fieldName": "distinct_high_severity_codes",
+                    "displayName": "High-severity codes",
+                    "format": {
+                      "type": "number",
+                      "decimalPlaces": {
+                        "type": "max",
+                        "places": 0
+                      }
+                    }
+                  },
+                  {
+                    "fieldName": "distinct_fault_codes",
+                    "displayName": "Fault codes",
+                    "format": {
+                      "type": "number",
+                      "decimalPlaces": {
+                        "type": "max",
+                        "places": 0
+                      }
+                    }
+                  },
+                  {
+                    "fieldName": "max_engine_temperature_celsius",
+                    "displayName": "Hottest engine \u00b0C",
+                    "format": {
+                      "type": "number",
+                      "decimalPlaces": {
+                        "type": "max",
+                        "places": 1
+                      }
+                    }
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Send to the workshop: newest day first, worst first"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 7,
+            "width": 6,
+            "height": 7
+          }
+        },
+        {
+          "widget": {
+            "name": "vehicle_health_5_0",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "vehicle_days",
+                  "fields": [
+                    {
+                      "name": "local_date",
+                      "expression": "`local_date`"
+                    },
+                    {
+                      "name": "count(vehicle_id)",
+                      "expression": "COUNT(`vehicle_id`)"
+                    },
+                    {
+                      "name": "health_status",
+                      "expression": "`health_status`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "local_date",
+                  "displayName": "Day",
+                  "scale": {
+                    "type": "temporal"
+                  }
+                },
+                "y": {
+                  "fieldName": "count(vehicle_id)",
+                  "displayName": "Vehicles",
+                  "scale": {
+                    "type": "quantitative"
+                  }
+                },
+                "color": {
+                  "fieldName": "health_status",
+                  "displayName": "Status",
+                  "scale": {
+                    "type": "categorical",
+                    "mappings": [
+                      {
+                        "value": "critical",
+                        "color": "#E5484D"
+                      },
+                      {
+                        "value": "attention",
+                        "color": "#F5A524"
+                      },
+                      {
+                        "value": "ok",
+                        "color": "#30A46C"
+                      }
+                    ]
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Vehicles per day by health status"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 14,
+            "width": 3,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "vehicle_health_5_1",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "vehicle_days",
+                  "fields": [
+                    {
+                      "name": "local_date",
+                      "expression": "`local_date`"
+                    },
+                    {
+                      "name": "max(max_engine_temperature_celsius)",
+                      "expression": "MAX(`max_engine_temperature_celsius`)"
+                    },
+                    {
+                      "name": "vehicle_id",
+                      "expression": "`vehicle_id`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "line",
+              "encodings": {
+                "x": {
+                  "fieldName": "local_date",
+                  "displayName": "Day",
+                  "scale": {
+                    "type": "temporal"
+                  }
+                },
+                "y": {
+                  "fieldName": "max(max_engine_temperature_celsius)",
+                  "displayName": "Hottest engine \u00b0C",
+                  "scale": {
+                    "type": "quantitative"
+                  }
+                },
+                "color": {
+                  "fieldName": "vehicle_id",
+                  "displayName": "Vehicle",
+                  "scale": {
+                    "type": "categorical"
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Hottest engine per day (pick vehicles in the filter above)"
+              }
+            }
+          },
+          "position": {
+            "x": 3,
+            "y": 14,
+            "width": 3,
+            "height": 6
+          }
+        }
+      ]
+    },
+    {
+      "name": "driver_safety",
+      "displayName": "Driver safety",
+      "pageType": "PAGE_TYPE_CANVAS",
+      "layout": [
+        {
+          "widget": {
+            "name": "driver_safety_0_0",
+            "multilineTextboxSpec": {
+              "lines": [
+                "# Driver safety"
+              ]
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 0,
+            "width": 6,
+            "height": 1
+          }
+        },
+        {
+          "widget": {
+            "name": "driver_safety_1_0",
+            "multilineTextboxSpec": {
+              "lines": [
+                "Harsh braking, harsh acceleration and sustained speeding, measured **per 100 km** so that long-distance drivers are not penalised for driving more. Scores run from 0 to 100 over each driver's whole history; below 10 km there is too little driving to judge."
+              ]
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 1,
+            "width": 6,
+            "height": 1
+          }
+        },
+        {
+          "widget": {
+            "name": "driver_safety_2_0",
+            "queries": [
+              {
+                "name": "driver_days_local_date",
+                "query": {
+                  "datasetName": "driver_days",
+                  "fields": [
+                    {
+                      "name": "local_date",
+                      "expression": "`local_date`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "filter-date-range-picker",
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "local_date",
+                    "displayName": "Days (daily charts)",
+                    "queryName": "driver_days_local_date"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Days (daily charts)"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 2,
+            "width": 2,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "driver_safety_2_1",
+            "queries": [
+              {
+                "name": "driver_days_client_id",
+                "query": {
+                  "datasetName": "driver_days",
+                  "fields": [
+                    {
+                      "name": "client_id",
+                      "expression": "`client_id`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "driver_scores_client_id",
+                "query": {
+                  "datasetName": "driver_scores",
+                  "fields": [
+                    {
+                      "name": "client_id",
+                      "expression": "`client_id`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "client_safety_scores_client_id",
+                "query": {
+                  "datasetName": "client_safety_scores",
+                  "fields": [
+                    {
+                      "name": "client_id",
+                      "expression": "`client_id`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "filter-multi-select",
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "client_id",
+                    "displayName": "Client",
+                    "queryName": "driver_days_client_id"
+                  },
+                  {
+                    "fieldName": "client_id",
+                    "displayName": "Client",
+                    "queryName": "driver_scores_client_id"
+                  },
+                  {
+                    "fieldName": "client_id",
+                    "displayName": "Client",
+                    "queryName": "client_safety_scores_client_id"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Client"
+              }
+            }
+          },
+          "position": {
+            "x": 2,
+            "y": 2,
+            "width": 2,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "driver_safety_2_2",
+            "queries": [
+              {
+                "name": "driver_days_driver_name",
+                "query": {
+                  "datasetName": "driver_days",
+                  "fields": [
+                    {
+                      "name": "driver_name",
+                      "expression": "`driver_name`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "driver_scores_driver_name",
+                "query": {
+                  "datasetName": "driver_scores",
+                  "fields": [
+                    {
+                      "name": "driver_name",
+                      "expression": "`driver_name`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "filter-multi-select",
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "driver_name",
+                    "displayName": "Driver",
+                    "queryName": "driver_days_driver_name"
+                  },
+                  {
+                    "fieldName": "driver_name",
+                    "displayName": "Driver",
+                    "queryName": "driver_scores_driver_name"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Driver"
+              }
+            }
+          },
+          "position": {
+            "x": 4,
+            "y": 2,
+            "width": 2,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "driver_safety_3_0",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "client_safety_scores",
+                  "fields": [
+                    {
+                      "name": "avg(fleet_safety_score)",
+                      "expression": "AVG(`fleet_safety_score`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "avg(fleet_safety_score)",
+                  "displayName": "Score",
+                  "format": {
+                    "type": "number",
+                    "decimalPlaces": {
+                      "type": "max",
+                      "places": 1
+                    }
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Fleet safety score (0\u2013100)"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 4,
+            "width": 2,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "driver_safety_3_1",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "driver_scores",
+                  "fields": [
+                    {
+                      "name": "sum(is_below_60)",
+                      "expression": "SUM(`is_below_60`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "sum(is_below_60)",
+                  "displayName": "Drivers",
+                  "format": {
+                    "type": "number",
+                    "decimalPlaces": {
+                      "type": "max",
+                      "places": 0
+                    }
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Drivers scoring below 60"
+              }
+            }
+          },
+          "position": {
+            "x": 2,
+            "y": 4,
+            "width": 2,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "driver_safety_3_2",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "driver_days",
+                  "fields": [
+                    {
+                      "name": "sum(km_without_registered_driver)",
+                      "expression": "SUM(`km_without_registered_driver`)"
+                    },
+                    {
+                      "name": "daily(local_date)",
+                      "expression": "DATE_TRUNC(\"DAY\", `local_date`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "sum(km_without_registered_driver)",
+                  "displayName": "km driven with nobody logged in",
+                  "format": {
+                    "type": "number",
+                    "decimalPlaces": {
+                      "type": "max",
+                      "places": 1
+                    }
+                  }
+                },
+                "period": {
+                  "fieldName": "daily(local_date)"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "km driven with nobody logged in"
+              }
+            }
+          },
+          "position": {
+            "x": 4,
+            "y": 4,
+            "width": 2,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "driver_safety_4_0",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "driver_scores",
+                  "fields": [
+                    {
+                      "name": "driver_name",
+                      "expression": "`driver_name`"
+                    },
+                    {
+                      "name": "driver_id",
+                      "expression": "`driver_id`"
+                    },
+                    {
+                      "name": "client_id",
+                      "expression": "`client_id`"
+                    },
+                    {
+                      "name": "safety_score",
+                      "expression": "`safety_score`"
+                    },
+                    {
+                      "name": "distance_km",
+                      "expression": "`distance_km`"
+                    },
+                    {
+                      "name": "trips",
+                      "expression": "`trips`"
+                    },
+                    {
+                      "name": "harsh_events_per_100_km",
+                      "expression": "`harsh_events_per_100_km`"
+                    },
+                    {
+                      "name": "speeding_minutes_per_100_km",
+                      "expression": "`speeding_minutes_per_100_km`"
+                    },
+                    {
+                      "name": "after_hours_trips",
+                      "expression": "`after_hours_trips`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "table",
+              "encodings": {
+                "columns": [
+                  {
+                    "fieldName": "driver_name",
+                    "displayName": "Driver"
+                  },
+                  {
+                    "fieldName": "driver_id",
+                    "displayName": "Driver id"
+                  },
+                  {
+                    "fieldName": "client_id",
+                    "displayName": "Client"
+                  },
+                  {
+                    "fieldName": "safety_score",
+                    "displayName": "Safety score",
+                    "format": {
+                      "type": "number",
+                      "decimalPlaces": {
+                        "type": "max",
+                        "places": 1
+                      }
+                    }
+                  },
+                  {
+                    "fieldName": "distance_km",
+                    "displayName": "km driven",
+                    "format": {
+                      "type": "number",
+                      "decimalPlaces": {
+                        "type": "max",
+                        "places": 1
+                      }
+                    }
+                  },
+                  {
+                    "fieldName": "trips",
+                    "displayName": "Trips",
+                    "format": {
+                      "type": "number",
+                      "decimalPlaces": {
+                        "type": "max",
+                        "places": 0
+                      }
+                    }
+                  },
+                  {
+                    "fieldName": "harsh_events_per_100_km",
+                    "displayName": "Harsh events per 100 km",
+                    "format": {
+                      "type": "number",
+                      "decimalPlaces": {
+                        "type": "max",
+                        "places": 1
+                      }
+                    }
+                  },
+                  {
+                    "fieldName": "speeding_minutes_per_100_km",
+                    "displayName": "Speeding minutes per 100 km",
+                    "format": {
+                      "type": "number",
+                      "decimalPlaces": {
+                        "type": "max",
+                        "places": 1
+                      }
+                    }
+                  },
+                  {
+                    "fieldName": "after_hours_trips",
+                    "displayName": "After-hours trips",
+                    "format": {
+                      "type": "number",
+                      "decimalPlaces": {
+                        "type": "max",
+                        "places": 0
+                      }
+                    }
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Drivers, lowest score first"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 7,
+            "width": 6,
+            "height": 7
+          }
+        },
+        {
+          "widget": {
+            "name": "driver_safety_5_0",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "driver_days",
+                  "fields": [
+                    {
+                      "name": "local_date",
+                      "expression": "`local_date`"
+                    },
+                    {
+                      "name": "sum(harsh_brakes)",
+                      "expression": "SUM(`harsh_brakes`)"
+                    },
+                    {
+                      "name": "sum(harsh_accelerations)",
+                      "expression": "SUM(`harsh_accelerations`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "local_date",
+                  "displayName": "Day",
+                  "scale": {
+                    "type": "temporal"
+                  }
+                },
+                "y": {
+                  "scale": {
+                    "type": "quantitative"
+                  },
+                  "fields": [
+                    {
+                      "fieldName": "sum(harsh_brakes)",
+                      "displayName": "Harsh brakes"
+                    },
+                    {
+                      "fieldName": "sum(harsh_accelerations)",
+                      "displayName": "Harsh accelerations"
+                    }
+                  ]
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Harsh events per day"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 14,
+            "width": 3,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "driver_safety_5_1",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "driver_days",
+                  "fields": [
+                    {
+                      "name": "local_date",
+                      "expression": "`local_date`"
+                    },
+                    {
+                      "name": "sum(distance_km)",
+                      "expression": "SUM(`distance_km`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "local_date",
+                  "displayName": "Day",
+                  "scale": {
+                    "type": "temporal"
+                  }
+                },
+                "y": {
+                  "fieldName": "sum(distance_km)",
+                  "displayName": "km",
+                  "scale": {
+                    "type": "quantitative"
+                  },
+                  "format": {
+                    "type": "number",
+                    "decimalPlaces": {
+                      "type": "max",
+                      "places": 1
+                    }
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Distance driven per day (km)"
+              }
+            }
+          },
+          "position": {
+            "x": 3,
+            "y": 14,
+            "width": 3,
+            "height": 6
+          }
+        }
+      ]
+    },
+    {
+      "name": "cost_utilization",
+      "displayName": "Cost & utilization",
+      "pageType": "PAGE_TYPE_CANVAS",
+      "layout": [
+        {
+          "widget": {
+            "name": "cost_utilization_0_0",
+            "multilineTextboxSpec": {
+              "lines": [
+                "# Cost & utilization"
+              ]
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 0,
+            "width": 6,
+            "height": 1
+          }
+        },
+        {
+          "widget": {
+            "name": "cost_utilization_1_0",
+            "multilineTextboxSpec": {
+              "lines": [
+                "What the fleet's fuel costs, how much of it is burned standing still with the engine running, and how much the fleet is actually driven. Fuel is priced at each region's price on the day."
+              ]
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 1,
+            "width": 6,
+            "height": 1
+          }
+        },
+        {
+          "widget": {
+            "name": "cost_utilization_2_0",
+            "queries": [
+              {
+                "name": "client_cost_days_local_date",
+                "query": {
+                  "datasetName": "client_cost_days",
+                  "fields": [
+                    {
+                      "name": "local_date",
+                      "expression": "`local_date`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "filter-date-range-picker",
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "local_date",
+                    "displayName": "Days",
+                    "queryName": "client_cost_days_local_date"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Days"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 2,
+            "width": 2,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "cost_utilization_2_1",
+            "queries": [
+              {
+                "name": "client_cost_days_client_id",
+                "query": {
+                  "datasetName": "client_cost_days",
+                  "fields": [
+                    {
+                      "name": "client_id",
+                      "expression": "`client_id`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "filter-multi-select",
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "client_id",
+                    "displayName": "Client",
+                    "queryName": "client_cost_days_client_id"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Client"
+              }
+            }
+          },
+          "position": {
+            "x": 2,
+            "y": 2,
+            "width": 2,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "cost_utilization_3_0",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "client_cost_days",
+                  "fields": [
+                    {
+                      "name": "sum(fuel_cost_usd)",
+                      "expression": "SUM(`fuel_cost_usd`)"
+                    },
+                    {
+                      "name": "daily(local_date)",
+                      "expression": "DATE_TRUNC(\"DAY\", `local_date`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "sum(fuel_cost_usd)",
+                  "displayName": "Fuel cost",
+                  "format": {
+                    "type": "number-currency",
+                    "currencyCode": "USD",
+                    "decimalPlaces": {
+                      "type": "max",
+                      "places": 2
+                    }
+                  }
+                },
+                "period": {
+                  "fieldName": "daily(local_date)"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Fuel cost"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 4,
+            "width": 2,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "cost_utilization_3_1",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "client_cost_days",
+                  "fields": [
+                    {
+                      "name": "sum(idle_cost_usd)",
+                      "expression": "SUM(`idle_cost_usd`)"
+                    },
+                    {
+                      "name": "daily(local_date)",
+                      "expression": "DATE_TRUNC(\"DAY\", `local_date`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "sum(idle_cost_usd)",
+                  "displayName": "Fuel burned idling",
+                  "format": {
+                    "type": "number-currency",
+                    "currencyCode": "USD",
+                    "decimalPlaces": {
+                      "type": "max",
+                      "places": 2
+                    }
+                  }
+                },
+                "period": {
+                  "fieldName": "daily(local_date)"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Fuel burned idling"
+              }
+            }
+          },
+          "position": {
+            "x": 2,
+            "y": 4,
+            "width": 2,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "cost_utilization_3_2",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "client_cost_days",
+                  "fields": [
+                    {
+                      "name": "sum(distance_km)",
+                      "expression": "SUM(`distance_km`)"
+                    },
+                    {
+                      "name": "daily(local_date)",
+                      "expression": "DATE_TRUNC(\"DAY\", `local_date`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "sum(distance_km)",
+                  "displayName": "km driven",
+                  "format": {
+                    "type": "number",
+                    "decimalPlaces": {
+                      "type": "max",
+                      "places": 1
+                    }
+                  }
+                },
+                "period": {
+                  "fieldName": "daily(local_date)"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "km driven"
+              }
+            }
+          },
+          "position": {
+            "x": 4,
+            "y": 4,
+            "width": 2,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "cost_utilization_4_0",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "client_cost_days",
+                  "fields": [
+                    {
+                      "name": "local_date",
+                      "expression": "`local_date`"
+                    },
+                    {
+                      "name": "sum(driving_fuel_cost_usd)",
+                      "expression": "SUM(`driving_fuel_cost_usd`)"
+                    },
+                    {
+                      "name": "sum(idle_cost_usd)",
+                      "expression": "SUM(`idle_cost_usd`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "local_date",
+                  "displayName": "Day",
+                  "scale": {
+                    "type": "temporal"
+                  }
+                },
+                "y": {
+                  "scale": {
+                    "type": "quantitative"
+                  },
+                  "fields": [
+                    {
+                      "fieldName": "sum(driving_fuel_cost_usd)",
+                      "displayName": "Driving",
+                      "format": {
+                        "type": "number-currency",
+                        "currencyCode": "USD",
+                        "decimalPlaces": {
+                          "type": "max",
+                          "places": 2
+                        }
+                      }
+                    },
+                    {
+                      "fieldName": "sum(idle_cost_usd)",
+                      "displayName": "Idling",
+                      "format": {
+                        "type": "number-currency",
+                        "currencyCode": "USD",
+                        "decimalPlaces": {
+                          "type": "max",
+                          "places": 2
+                        }
+                      }
+                    }
+                  ]
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Fuel cost per day: driving vs idling"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 7,
+            "width": 3,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "cost_utilization_4_1",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "client_cost_days",
+                  "fields": [
+                    {
+                      "name": "local_date",
+                      "expression": "`local_date`"
+                    },
+                    {
+                      "name": "sum(driving_hours)",
+                      "expression": "SUM(`driving_hours`)"
+                    },
+                    {
+                      "name": "sum(idle_hours)",
+                      "expression": "SUM(`idle_hours`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "local_date",
+                  "displayName": "Day",
+                  "scale": {
+                    "type": "temporal"
+                  }
+                },
+                "y": {
+                  "scale": {
+                    "type": "quantitative"
+                  },
+                  "fields": [
+                    {
+                      "fieldName": "sum(driving_hours)",
+                      "displayName": "Driving hours"
+                    },
+                    {
+                      "fieldName": "sum(idle_hours)",
+                      "displayName": "Idle hours"
+                    }
+                  ]
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Hours per day: driving vs idling"
+              },
+              "mark": {
+                "layout": "group"
+              }
+            }
+          },
+          "position": {
+            "x": 3,
+            "y": 7,
+            "width": 3,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "cost_utilization_5_0",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "client_cost_days",
+                  "fields": [
+                    {
+                      "name": "local_date",
+                      "expression": "`local_date`"
+                    },
+                    {
+                      "name": "client_id",
+                      "expression": "`client_id`"
+                    },
+                    {
+                      "name": "fuel_cost_usd",
+                      "expression": "`fuel_cost_usd`"
+                    },
+                    {
+                      "name": "fuel_cost_per_km_usd",
+                      "expression": "`fuel_cost_per_km_usd`"
+                    },
+                    {
+                      "name": "idle_cost_share",
+                      "expression": "`idle_cost_share`"
+                    },
+                    {
+                      "name": "distance_km",
+                      "expression": "`distance_km`"
+                    },
+                    {
+                      "name": "vehicles_active",
+                      "expression": "`vehicles_active`"
+                    },
+                    {
+                      "name": "vehicles_reporting",
+                      "expression": "`vehicles_reporting`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "table",
+              "encodings": {
+                "columns": [
+                  {
+                    "fieldName": "local_date",
+                    "displayName": "Day"
+                  },
+                  {
+                    "fieldName": "client_id",
+                    "displayName": "Client"
+                  },
+                  {
+                    "fieldName": "fuel_cost_usd",
+                    "displayName": "Fuel cost",
+                    "format": {
+                      "type": "number-currency",
+                      "currencyCode": "USD",
+                      "decimalPlaces": {
+                        "type": "max",
+                        "places": 2
+                      }
+                    }
+                  },
+                  {
+                    "fieldName": "fuel_cost_per_km_usd",
+                    "displayName": "Cost per km",
+                    "format": {
+                      "type": "number-currency",
+                      "currencyCode": "USD",
+                      "decimalPlaces": {
+                        "type": "max",
+                        "places": 2
+                      }
+                    }
+                  },
+                  {
+                    "fieldName": "idle_cost_share",
+                    "displayName": "Share burned idling",
+                    "format": {
+                      "type": "number-percent",
+                      "decimalPlaces": {
+                        "type": "max",
+                        "places": 1
+                      }
+                    }
+                  },
+                  {
+                    "fieldName": "distance_km",
+                    "displayName": "km driven",
+                    "format": {
+                      "type": "number",
+                      "decimalPlaces": {
+                        "type": "max",
+                        "places": 1
+                      }
+                    }
+                  },
+                  {
+                    "fieldName": "vehicles_active",
+                    "displayName": "Vehicles driven",
+                    "format": {
+                      "type": "number",
+                      "decimalPlaces": {
+                        "type": "max",
+                        "places": 0
+                      }
+                    }
+                  },
+                  {
+                    "fieldName": "vehicles_reporting",
+                    "displayName": "Vehicles reporting",
+                    "format": {
+                      "type": "number",
+                      "decimalPlaces": {
+                        "type": "max",
+                        "places": 0
+                      }
+                    }
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Cost and use per client per day"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 13,
+            "width": 6,
+            "height": 6
+          }
+        }
+      ]
+    },
+    {
+      "name": "misuse",
+      "displayName": "Misuse",
+      "pageType": "PAGE_TYPE_CANVAS",
+      "layout": [
+        {
+          "widget": {
+            "name": "misuse_0_0",
+            "multilineTextboxSpec": {
+              "lines": [
+                "# Misuse"
+              ]
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 0,
+            "width": 6,
+            "height": 1
+          }
+        },
+        {
+          "widget": {
+            "name": "misuse_1_0",
+            "multilineTextboxSpec": {
+              "lines": [
+                "Vehicle days worth a security review: driving outside the client's operating hours, leaving the region's geofence, or trips with nobody logged in on a registered fob. A day with nothing to review is not listed."
+              ]
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 1,
+            "width": 6,
+            "height": 1
+          }
+        },
+        {
+          "widget": {
+            "name": "misuse_2_0",
+            "queries": [
+              {
+                "name": "misuse_days_local_date",
+                "query": {
+                  "datasetName": "misuse_days",
+                  "fields": [
+                    {
+                      "name": "local_date",
+                      "expression": "`local_date`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "misuse_by_kind_local_date",
+                "query": {
+                  "datasetName": "misuse_by_kind",
+                  "fields": [
+                    {
+                      "name": "local_date",
+                      "expression": "`local_date`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "filter-date-range-picker",
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "local_date",
+                    "displayName": "Days",
+                    "queryName": "misuse_days_local_date"
+                  },
+                  {
+                    "fieldName": "local_date",
+                    "displayName": "Days",
+                    "queryName": "misuse_by_kind_local_date"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Days"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 2,
+            "width": 2,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "misuse_2_1",
+            "queries": [
+              {
+                "name": "misuse_days_client_id",
+                "query": {
+                  "datasetName": "misuse_days",
+                  "fields": [
+                    {
+                      "name": "client_id",
+                      "expression": "`client_id`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "misuse_by_kind_client_id",
+                "query": {
+                  "datasetName": "misuse_by_kind",
+                  "fields": [
+                    {
+                      "name": "client_id",
+                      "expression": "`client_id`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "filter-multi-select",
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "client_id",
+                    "displayName": "Client",
+                    "queryName": "misuse_days_client_id"
+                  },
+                  {
+                    "fieldName": "client_id",
+                    "displayName": "Client",
+                    "queryName": "misuse_by_kind_client_id"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Client"
+              }
+            }
+          },
+          "position": {
+            "x": 2,
+            "y": 2,
+            "width": 2,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "misuse_2_2",
+            "queries": [
+              {
+                "name": "misuse_days_vehicle_id",
+                "query": {
+                  "datasetName": "misuse_days",
+                  "fields": [
+                    {
+                      "name": "vehicle_id",
+                      "expression": "`vehicle_id`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "misuse_by_kind_vehicle_id",
+                "query": {
+                  "datasetName": "misuse_by_kind",
+                  "fields": [
+                    {
+                      "name": "vehicle_id",
+                      "expression": "`vehicle_id`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "filter-multi-select",
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "vehicle_id",
+                    "displayName": "Vehicle",
+                    "queryName": "misuse_days_vehicle_id"
+                  },
+                  {
+                    "fieldName": "vehicle_id",
+                    "displayName": "Vehicle",
+                    "queryName": "misuse_by_kind_vehicle_id"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Vehicle"
+              }
+            }
+          },
+          "position": {
+            "x": 4,
+            "y": 2,
+            "width": 2,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "misuse_3_0",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "misuse_days",
+                  "fields": [
+                    {
+                      "name": "sum(after_hours_trips)",
+                      "expression": "SUM(`after_hours_trips`)"
+                    },
+                    {
+                      "name": "daily(local_date)",
+                      "expression": "DATE_TRUNC(\"DAY\", `local_date`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "sum(after_hours_trips)",
+                  "displayName": "After-hours trips",
+                  "format": {
+                    "type": "number",
+                    "decimalPlaces": {
+                      "type": "max",
+                      "places": 0
+                    }
+                  }
+                },
+                "period": {
+                  "fieldName": "daily(local_date)"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "After-hours trips"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 4,
+            "width": 2,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "misuse_3_1",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "misuse_days",
+                  "fields": [
+                    {
+                      "name": "sum(geofence_exits)",
+                      "expression": "SUM(`geofence_exits`)"
+                    },
+                    {
+                      "name": "daily(local_date)",
+                      "expression": "DATE_TRUNC(\"DAY\", `local_date`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "sum(geofence_exits)",
+                  "displayName": "Geofence exits",
+                  "format": {
+                    "type": "number",
+                    "decimalPlaces": {
+                      "type": "max",
+                      "places": 0
+                    }
+                  }
+                },
+                "period": {
+                  "fieldName": "daily(local_date)"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Geofence exits"
+              }
+            }
+          },
+          "position": {
+            "x": 2,
+            "y": 4,
+            "width": 2,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "misuse_3_2",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "misuse_days",
+                  "fields": [
+                    {
+                      "name": "sum(trips_without_registered_driver)",
+                      "expression": "SUM(`trips_without_registered_driver`)"
+                    },
+                    {
+                      "name": "daily(local_date)",
+                      "expression": "DATE_TRUNC(\"DAY\", `local_date`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "sum(trips_without_registered_driver)",
+                  "displayName": "Trips with nobody logged in",
+                  "format": {
+                    "type": "number",
+                    "decimalPlaces": {
+                      "type": "max",
+                      "places": 0
+                    }
+                  }
+                },
+                "period": {
+                  "fieldName": "daily(local_date)"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Trips with nobody logged in"
+              }
+            }
+          },
+          "position": {
+            "x": 4,
+            "y": 4,
+            "width": 2,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "misuse_4_0",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "misuse_by_kind",
+                  "fields": [
+                    {
+                      "name": "local_date",
+                      "expression": "`local_date`"
+                    },
+                    {
+                      "name": "sum(cases)",
+                      "expression": "SUM(`cases`)"
+                    },
+                    {
+                      "name": "kind",
+                      "expression": "`kind`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "local_date",
+                  "displayName": "Day",
+                  "scale": {
+                    "type": "temporal"
+                  }
+                },
+                "y": {
+                  "fieldName": "sum(cases)",
+                  "displayName": "Cases",
+                  "scale": {
+                    "type": "quantitative"
+                  }
+                },
+                "color": {
+                  "fieldName": "kind",
+                  "displayName": "Kind",
+                  "scale": {
+                    "type": "categorical",
+                    "mappings": [
+                      {
+                        "value": "After-hours trip",
+                        "color": "#8E4EC6"
+                      },
+                      {
+                        "value": "Geofence exit",
+                        "color": "#F5A524"
+                      },
+                      {
+                        "value": "No registered driver",
+                        "color": "#E5484D"
+                      }
+                    ]
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Cases per day, by kind"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 7,
+            "width": 6,
+            "height": 5
+          }
+        },
+        {
+          "widget": {
+            "name": "misuse_5_0",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "misuse_days",
+                  "fields": [
+                    {
+                      "name": "local_date",
+                      "expression": "`local_date`"
+                    },
+                    {
+                      "name": "client_id",
+                      "expression": "`client_id`"
+                    },
+                    {
+                      "name": "vehicle_id",
+                      "expression": "`vehicle_id`"
+                    },
+                    {
+                      "name": "after_hours_trips",
+                      "expression": "`after_hours_trips`"
+                    },
+                    {
+                      "name": "after_hours_distance_km",
+                      "expression": "`after_hours_distance_km`"
+                    },
+                    {
+                      "name": "geofence_exits",
+                      "expression": "`geofence_exits`"
+                    },
+                    {
+                      "name": "trips_without_registered_driver",
+                      "expression": "`trips_without_registered_driver`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "table",
+              "encodings": {
+                "columns": [
+                  {
+                    "fieldName": "local_date",
+                    "displayName": "Day"
+                  },
+                  {
+                    "fieldName": "client_id",
+                    "displayName": "Client"
+                  },
+                  {
+                    "fieldName": "vehicle_id",
+                    "displayName": "Vehicle"
+                  },
+                  {
+                    "fieldName": "after_hours_trips",
+                    "displayName": "After-hours trips",
+                    "format": {
+                      "type": "number",
+                      "decimalPlaces": {
+                        "type": "max",
+                        "places": 0
+                      }
+                    }
+                  },
+                  {
+                    "fieldName": "after_hours_distance_km",
+                    "displayName": "After-hours km",
+                    "format": {
+                      "type": "number",
+                      "decimalPlaces": {
+                        "type": "max",
+                        "places": 1
+                      }
+                    }
+                  },
+                  {
+                    "fieldName": "geofence_exits",
+                    "displayName": "Geofence exits",
+                    "format": {
+                      "type": "number",
+                      "decimalPlaces": {
+                        "type": "max",
+                        "places": 0
+                      }
+                    }
+                  },
+                  {
+                    "fieldName": "trips_without_registered_driver",
+                    "displayName": "Trips with nobody logged in",
+                    "format": {
+                      "type": "number",
+                      "decimalPlaces": {
+                        "type": "max",
+                        "places": 0
+                      }
+                    }
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Vehicle days to review, newest first"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 12,
+            "width": 6,
+            "height": 6
+          }
+        }
+      ]
+    }
+  ]
+}

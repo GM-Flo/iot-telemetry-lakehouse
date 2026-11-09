@@ -1,0 +1,25 @@
+# Dashboards as code. Layouts live in src/iot/dashboards.py and queries in
+# dashboards/*.sql; `python -m src.iot.dashboards` regenerates the .lvdash.json
+# files below. Queries name tables without a catalog: dataset_catalog points them
+# at this environment's catalog.
+resources:
+  dashboards:
+    fleet_operations:
+      display_name: Fleet Operations
+      file_path: ../dashboards/fleet_operations.lvdash.json
+      warehouse_id: ${var.warehouse_id}
+      dataset_catalog: ${var.catalog}
+      dataset_schema: gold
+      # Each viewer's own identity runs the queries, so the row filters show every
+      # fleet manager only their own client. Embedding the publisher's credentials
+      # would show everyone everything the publisher can see.
+      embed_credentials: false
+
+    platform_health:
+      display_name: Platform Health
+      file_path: ../dashboards/platform_health.lvdash.json
+      warehouse_id: ${var.warehouse_id}
+      dataset_catalog: ${var.catalog}
+      dataset_schema: gold
+      # For the platform team only, who may see every client anyway.
+      embed_credentials: true
