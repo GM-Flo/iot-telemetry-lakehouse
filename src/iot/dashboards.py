@@ -471,7 +471,7 @@ def write_all() -> list[Path]:
     for name, pages in DASHBOARD_LAYOUTS.items():
         document = build(pages, read_datasets(DASHBOARDS / f"{name}.sql"))
         path = DASHBOARDS / f"{name}.lvdash.json"
-        path.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
+        path.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8", newline="\n")
         written.append(path)
     return written
 
