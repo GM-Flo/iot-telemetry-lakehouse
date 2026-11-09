@@ -1,5 +1,6 @@
 vendor_id,contract,version,status,supported_from,notes
 tmx,tmx.telemetry.v1,1,current,2026-10-01,Flat JSON with metric units
-fpl,fpl.telemetry.v1,1,current,2026-10-01,camelCase keys with imperial units and epoch milliseconds
+fpl,fpl.telemetry.v1,1,supported,2026-10-01,camelCase keys with imperial units and epoch milliseconds
+fpl,fpl.telemetry.v2,2,current,2026-11-08,Firmware 2: metric units nested engine and location ISO 8601 timestamps
 gtk,gtk.telemetry.v1,1,current,2026-10-01,Nested objects with timestamps that carry no time zone
 ats,ats.telemetry.v1,1,current,2026-10-01,Several readings batched in one message

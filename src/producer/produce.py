@@ -332,6 +332,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--glitch-fraction", type=float, default=0.003,
                         help="share of readings with a sensor or clock fault")
     parser.add_argument("--ats-batch-size", type=int, default=3)
+    parser.add_argument("--fpl-v2-share", type=float, default=0.0,
+                        help="share of FleetPulse devices on firmware 2, sending contract v2 (0 to 1)")
     parser.add_argument("--log-level", default="INFO")
 
     args = parser.parse_args(argv)
@@ -385,7 +387,7 @@ def main(argv: list[str] | None = None) -> int:
     if not resume_fleet(fleet, args):
         return 2
 
-    gateway = Gateway(rng, ats_batch_size=args.ats_batch_size)
+    gateway = Gateway(rng, ats_batch_size=args.ats_batch_size, fpl_v2_share=args.fpl_v2_share)
     sink = TelemetrySink(conn_str, args.dry_run)
 
     try:

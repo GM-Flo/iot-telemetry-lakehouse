@@ -55,9 +55,11 @@ def quarantine_summary_by_hour():
 
 @dp.materialized_view(
     name=f"{OPERATIONS}.silver_reconciliation",
-    comment="Bronze recounted in batch against what silver stored and quarantined. unaccounted_readings must be 0.",
+    comment="Bronze recounted in batch against what silver stored and quarantined, reading by reading. "
+    "lost_readings and unexpected_readings must be 0.",
 )
-@dp.expect("every_reading_accounted_for", "unaccounted_readings = 0")
+@dp.expect("no_reading_lost", "lost_readings = 0")
+@dp.expect("no_reading_invented", "unexpected_readings = 0")
 def silver_reconciliation():
     bronze = spark.read.table(BRONZE_MESSAGES)
     checked = tel.check_contract(
@@ -75,4 +77,5 @@ def silver_reconciliation():
         measurements=spark.read.table("vehicle_measurements"),
         invalid_values=spark.read.table("quarantine_invalid_values"),
         registry_mismatches=spark.read.table("quarantine_registry_mismatches"),
+        content_columns=list(norm.STANDARD_FIELDS),
     )

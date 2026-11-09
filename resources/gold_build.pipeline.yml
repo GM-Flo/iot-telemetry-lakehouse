@@ -33,3 +33,5 @@ resources:
             path: ../pipelines/gold/dimensions.py
         - file:
             path: ../pipelines/gold/facts.py
+        - file:
+            path: ../pipelines/gold/products.py

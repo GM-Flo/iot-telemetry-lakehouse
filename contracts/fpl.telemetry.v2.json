@@ -1,0 +1,150 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "fpl.telemetry.v2",
+  "title": "FleetPulse telemetry v2",
+  "description": "Firmware 2: metric units, nested engine and location objects, ISO 8601 UTC timestamps, outside air temperature. One reading per message.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "deviceId",
+    "vin",
+    "accountId",
+    "driverFobId",
+    "timestamp",
+    "sentAt",
+    "ignitionOn",
+    "speedKph",
+    "engine",
+    "batteryVolts",
+    "fuelPct",
+    "odometerKm",
+    "location",
+    "faultCodes",
+    "harshBrakeEvents",
+    "harshAccelEvents",
+    "ambientTempC"
+  ],
+  "properties": {
+    "deviceId": {
+      "type": "string",
+      "pattern": "^FPL-[0-9A-F]{6}$"
+    },
+    "vin": {
+      "type": "string",
+      "pattern": "^[A-HJ-NPR-Z0-9]{17}$"
+    },
+    "accountId": {
+      "type": "string",
+      "pattern": "^C[0-9]{3}$"
+    },
+    "driverFobId": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^FOB-[0-9A-F]{8}$",
+      "description": "Driver key fob; null when no driver is logged in (engine off)"
+    },
+    "timestamp": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d{1,6})?Z$",
+      "description": "Event time, ISO 8601 UTC"
+    },
+    "sentAt": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d{1,6})?Z$",
+      "description": "Transmission time, ISO 8601 UTC"
+    },
+    "ignitionOn": {
+      "type": "boolean"
+    },
+    "speedKph": {
+      "type": "number",
+      "minimum": 0
+    },
+    "engine": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "rpm",
+        "tempC",
+        "coolantPressureKpa",
+        "oilPressureKpa"
+      ],
+      "properties": {
+        "rpm": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "tempC": {
+          "type": "number"
+        },
+        "coolantPressureKpa": {
+          "type": "number"
+        },
+        "oilPressureKpa": {
+          "type": "number"
+        }
+      }
+    },
+    "batteryVolts": {
+      "type": "number"
+    },
+    "fuelPct": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 100
+    },
+    "odometerKm": {
+      "type": "number",
+      "minimum": 0
+    },
+    "location": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "lat",
+        "lng",
+        "heading"
+      ],
+      "properties": {
+        "lat": {
+          "type": "number",
+          "minimum": -90,
+          "maximum": 90
+        },
+        "lng": {
+          "type": "number",
+          "minimum": -180,
+          "maximum": 180
+        },
+        "heading": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 360
+        }
+      }
+    },
+    "faultCodes": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^[PBCU][0-9]{4}$"
+      }
+    },
+    "harshBrakeEvents": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Harsh braking events since the previous reading"
+    },
+    "harshAccelEvents": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Harsh acceleration events since the previous reading"
+    },
+    "ambientTempC": {
+      "type": "number",
+      "description": "Outside air temperature, degrees C. New in v2; not mapped to a standard field yet."
+    }
+  }
+}

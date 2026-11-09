@@ -164,6 +164,7 @@ class TestQuarantineUnparseable:
         assert row["quarantine_stage"] == "parse"
         assert row["kafka_offset"] == 100
         assert row["quarantine_detail"] is None
+        assert row["device_id"] is None and row["event_ts"] is None  # a message-level stage
         assert row["quarantined_at"] is not None
         assert row["replayed"] is False
 

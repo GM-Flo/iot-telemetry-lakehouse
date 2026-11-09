@@ -109,6 +109,18 @@ def quarantine_summary_by_hour(*quarantines: DataFrame) -> DataFrame:
     )
 
 
+READING_KEY = ["device_id", "event_ts"]
+
+
+def _keys(df: DataFrame) -> DataFrame:
+    return df.select(*READING_KEY).where(F.col("device_id").isNotNull() & F.col("event_ts").isNotNull())
+
+
+def _count_without_key(df: DataFrame, name: str) -> DataFrame:
+    missing = F.col("device_id").isNull() | F.col("event_ts").isNull()
+    return df.agg(F.coalesce(F.sum(missing.cast("int")), F.lit(0)).alias(name))
+
+
 def silver_reconciliation(
     bronze_messages: DataFrame,
     expected_readings: DataFrame,
@@ -117,33 +129,74 @@ def silver_reconciliation(
     measurements: DataFrame,
     invalid_values: DataFrame,
     registry_mismatches: DataFrame,
+    content_columns: list[str],
 ) -> DataFrame:
     """One row comparing a batch recount of bronze with what the streaming flows stored.
 
     expected_readings is bronze put through parse, contract and normalize again,
-    in batch. It is independent of checkpoints, joins and the AUTO CDC upsert,
-    which is where readings get lost or doubled. Every expected reading must be
-    stored, quarantined, or collapsed as a duplicate of the same device and time.
+    in batch, independent of checkpoints, joins and the AUTO CDC upsert, which is
+    where readings get lost or doubled.
+
+    Readings are compared by their identity, (device_id, event_ts), the key
+    vehicle_measurements is kept unique on. Every expected identity must be
+    stored or quarantined somewhere, and nothing may exist that was not expected:
+
+      lost_readings          expected, but found in no table           must be 0
+      unexpected_readings    found in a table, but never expected      must be 0
+      duplicate_readings     extra copies of an identity, collapsed    information
+      conflicting_duplicates identities whose copies differ in content information:
+                             two different readings claiming the same
+                             device and instant, e.g. a vendor sending
+                             timestamps rounded to the second
+
+    A reading missing its device or its time cannot be identified; validity
+    quarantines it, so such readings are matched by count instead.
     """
+    expected_keys = _keys(expected_readings).distinct()
+    found = (
+        _keys(measurements).unionByName(_keys(invalid_values)).unionByName(_keys(registry_mismatches)).distinct()
+    )
+    lost = expected_keys.join(found, READING_KEY, "left_anti").agg(F.count("*").alias("_lost"))
+    unexpected = found.join(expected_keys, READING_KEY, "left_anti").agg(F.count("*").alias("_unexpected"))
+
+    content = F.sha2(F.to_json(F.struct(*content_columns)), 256)
+    copies = (
+        expected_readings.where(F.col("device_id").isNotNull() & F.col("event_ts").isNotNull())
+        .withColumn("_content", content)
+        .groupBy(*READING_KEY)
+        .agg(F.count("*").alias("_copies"), F.countDistinct("_content").alias("_versions"))
+        .agg(
+            F.coalesce(F.sum(F.col("_copies") - 1), F.lit(0)).alias("duplicate_readings"),
+            F.coalesce(F.sum((F.col("_versions") > 1).cast("int")), F.lit(0)).alias("conflicting_duplicates"),
+        )
+    )
+    unidentified = _count_without_key(expected_readings, "_expected_no_key").crossJoin(
+        _count_without_key(invalid_values, "_quarantined_no_key")
+    )
+
     def count(df: DataFrame, name: str) -> DataFrame:
         return df.agg(F.count("*").alias(name))
 
-    duplicates = expected_readings.agg(
-        (F.count("*") - F.countDistinct("device_id", "event_ts")).alias("duplicate_readings")
-    )
     parts = [
         count(bronze_messages, "bronze_messages"),
         count(unparseable, "unparseable_messages"),
         count(contract_violations, "contract_violation_messages"),
         count(expected_readings, "expected_readings"),
-        duplicates,
         count(measurements, "stored_readings"),
         count(invalid_values, "invalid_readings"),
         count(registry_mismatches, "mismatched_readings"),
+        copies,
+        lost,
+        unexpected,
+        unidentified,
     ]
     row = reduce(lambda left, right: left.crossJoin(right), parts)
-    return row.withColumn(
-        "unaccounted_readings",
-        F.col("expected_readings") - F.col("duplicate_readings") - F.col("stored_readings")
-        - F.col("invalid_readings") - F.col("mismatched_readings"),
-    ).withColumn("checked_at", F.current_timestamp())
+    no_key_difference = F.col("_expected_no_key") - F.col("_quarantined_no_key")
+    return row.select(
+        "bronze_messages", "unparseable_messages", "contract_violation_messages",
+        "expected_readings", "stored_readings", "invalid_readings", "mismatched_readings",
+        "duplicate_readings", "conflicting_duplicates",
+        (F.col("_lost") + F.greatest(no_key_difference, F.lit(0))).alias("lost_readings"),
+        (F.col("_unexpected") + F.greatest(-no_key_difference, F.lit(0))).alias("unexpected_readings"),
+        F.current_timestamp().alias("checked_at"),
+    )

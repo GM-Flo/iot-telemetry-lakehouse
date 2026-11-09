@@ -213,3 +213,35 @@ class TestValidateMappings:
     def test_contract_without_mappings_stops_the_pipeline(self):
         with pytest.raises(ValueError, match="missing target fields"):
             validate_mappings("tmx.telemetry.v2", [])
+
+
+class TestStreamingShape:
+    """A streaming checkpoint records how many sources its query reads. If adding a
+    contract added a source, every downstream checkpoint would refuse to continue."""
+
+    @pytest.fixture
+    def stream(self, spark):
+        return spark.readStream.format("rate").load().select(
+            F.lit("m").alias("message_id"),
+            F.lit("tmx").alias("vendor_id"),
+            F.lit("tmx.telemetry.v1").alias("contract"),
+            F.lit(0).alias("kafka_partition"),
+            F.col("value").alias("kafka_offset"),
+            F.col("timestamp").alias("eventhub_enqueued_at"),
+            F.col("timestamp").alias("ingested_at"),
+            F.lit("2026-11-06T18:00:00+00:00").alias("received_at"),
+            F.lit("{}").alias("payload"),
+            F.lit("pass").alias("record_status"),
+        )
+
+    @staticmethod
+    def streaming_sources(df) -> int:
+        return df._jdf.queryExecution().logical().toString().count("StreamingRelation")
+
+    def test_one_source_whatever_the_number_of_contracts(self, stream):
+        one = {"tmx.telemetry.v1": MAPPINGS["tmx.telemetry.v1"]}
+        with_extra = {**MAPPINGS, "tmx.telemetry.v9": MAPPINGS["tmx.telemetry.v1"]}
+
+        assert self.streaming_sources(stream) == 1
+        for mappings in (one, MAPPINGS, with_extra):
+            assert self.streaming_sources(normalize(stream, mappings)) == 1

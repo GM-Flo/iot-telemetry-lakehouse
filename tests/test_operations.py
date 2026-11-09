@@ -87,14 +87,16 @@ class TestPipelineRuns:
 
 def quarantine_rows(spark, rows):
     schema = (
-        "message_id string, measurement_id string, reading_index int, vendor_id string, raw_payload string, "
+        "message_id string, measurement_id string, reading_index int, device_id string, event_ts timestamp, "
+        "vendor_id string, raw_payload string, "
         "quarantine_stage string, quarantine_reason string, quarantine_detail string, kafka_partition int, "
         "kafka_offset long, eventhub_enqueued_at timestamp, ingested_at timestamp, quarantined_at timestamp, "
         "replayed boolean"
     )
     assert [c.split()[0] for c in schema.split(", ")] == QUARANTINE_COLUMNS
     return spark.createDataFrame(
-        [("m", None, None, vendor, None, stage, reason, None, 0, 1, arrived, arrived, T0 + timedelta(days=1), replayed)
+        [("m", None, None, None, None, vendor, None, stage, reason, None, 0, 1, arrived, arrived,
+          T0 + timedelta(days=1), replayed)
          for vendor, stage, reason, arrived, replayed in rows],
         schema,
     )
@@ -119,37 +121,57 @@ class TestQuarantineSummary:
 
 
 class TestSilverReconciliation:
+    """Readings are compared by identity, (device_id, event_ts), in every table."""
+
     @pytest.fixture
-    def frames(self, spark):
-        def rows(n, columns="x int"):
-            return spark.createDataFrame([(i,) for i in range(n)], columns)
+    def run(self, spark):
+        def readings(rows):
+            return spark.createDataFrame(rows, "device_id string, event_ts long, speed double")
 
-        def readings(keys):
-            return spark.createDataFrame(keys, "device_id string, event_ts long")
+        def _run(expected, stored=(), invalid=(), mismatched=()):
+            messages = spark.createDataFrame([(i,) for i in range(10)], "x int")
+            return silver_reconciliation(
+                messages, readings(expected), messages.limit(2), messages.limit(1),
+                readings(stored), readings(invalid), readings(mismatched), content_columns=["speed"],
+            ).first()
 
-        return rows, readings
+        return _run
 
-    def test_balanced_when_everything_is_stored_quarantined_or_a_duplicate(self, frames):
-        rows, readings = frames
-        expected = readings([("A", 1), ("A", 2), ("A", 2), ("B", 1), ("C", 1)])
-        result = silver_reconciliation(
-            rows(10), expected, rows(2), rows(1), rows(2), rows(1), rows(1)
-        ).first()
+    def test_balanced_when_every_reading_is_somewhere(self, run):
+        result = run(
+            expected=[("A", 1, 50.0), ("A", 2, 50.0), ("B", 1, 50.0), (None, 9, 50.0)],
+            stored=[("A", 1, 50.0), ("A", 2, 50.0)],
+            mismatched=[("B", 1, 50.0)],
+            invalid=[(None, 9, 50.0)],
+        )
+        assert (result["lost_readings"], result["unexpected_readings"]) == (0, 0)
+        assert result["expected_readings"] == 4
 
-        assert result["expected_readings"] == 5
+    def test_a_lost_reading_shows_up(self, run):
+        result = run(expected=[("A", 1, 50.0), ("A", 2, 50.0)], stored=[("A", 1, 50.0)])
+        assert (result["lost_readings"], result["unexpected_readings"]) == (1, 0)
+
+    def test_an_invented_reading_shows_up(self, run):
+        result = run(expected=[("A", 1, 50.0)], stored=[("A", 1, 50.0), ("Z", 7, 50.0)])
+        assert (result["lost_readings"], result["unexpected_readings"]) == (0, 1)
+
+    def test_both_copies_of_a_duplicate_in_quarantine_are_not_double_counted(self, run):
+        """The bug that made unaccounted_readings -3: append-only quarantine keeps both copies."""
+        result = run(expected=[("A", 1, 50.0), ("A", 1, 50.0)], mismatched=[("A", 1, 50.0), ("A", 1, 50.0)])
+        assert (result["lost_readings"], result["unexpected_readings"]) == (0, 0)
         assert result["duplicate_readings"] == 1
-        assert result["unaccounted_readings"] == 0
 
-    def test_lost_readings_show_up(self, frames):
-        rows, readings = frames
-        expected = readings([("A", 1), ("A", 2), ("B", 1)])
-        result = silver_reconciliation(rows(3), expected, rows(0), rows(0), rows(1), rows(0), rows(0)).first()
+    def test_identical_and_conflicting_duplicates_are_told_apart(self, run):
+        result = run(
+            expected=[("A", 1, 50.0), ("A", 1, 50.0), ("B", 1, 40.0), ("B", 1, 90.0)],
+            stored=[("A", 1, 50.0), ("B", 1, 90.0)],
+        )
+        assert result["duplicate_readings"] == 2
+        assert result["conflicting_duplicates"] == 1
+        assert (result["lost_readings"], result["unexpected_readings"]) == (0, 0)
 
-        assert result["unaccounted_readings"] == 2
-
-    def test_doubled_readings_show_up_negative(self, frames):
-        rows, readings = frames
-        expected = readings([("A", 1)])
-        result = silver_reconciliation(rows(1), expected, rows(0), rows(0), rows(2), rows(0), rows(0)).first()
-
-        assert result["unaccounted_readings"] == -1
+    def test_a_reading_without_identity_is_matched_by_count(self, run):
+        missing = run(expected=[(None, 1, 50.0), (None, 2, 50.0)], invalid=[(None, 1, 50.0)])
+        extra = run(expected=[(None, 1, 50.0)], invalid=[(None, 1, 50.0), (None, 2, 50.0)])
+        assert (missing["lost_readings"], missing["unexpected_readings"]) == (1, 0)
+        assert (extra["lost_readings"], extra["unexpected_readings"]) == (0, 1)

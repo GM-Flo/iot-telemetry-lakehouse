@@ -106,7 +106,7 @@ class TestFleet:
 
 class TestContracts:
     def test_every_contract_is_a_valid_schema(self):
-        for name in ["envelope.v1", *[v.contract for v in VENDORS.values()]]:
+        for name in ["envelope.v1", "fpl.telemetry.v2", *[v.contract for v in VENDORS.values()]]:
             validator(name)
 
     def test_every_envelope_conforms(self, prod_messages):

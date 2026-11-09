@@ -182,5 +182,7 @@ class TestQuarantineInvalidValues:
         assert row["quarantine_stage"] == "validity"
         assert row["measurement_id"] == "m-1"
         assert row["reading_index"] == 0
+        assert row["device_id"] == GOOD["device_id"]
+        assert row["event_ts"] is not None
         assert row["raw_payload"] is None
         assert row["kafka_offset"] == 7

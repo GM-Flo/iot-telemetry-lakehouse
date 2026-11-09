@@ -8,6 +8,11 @@ Paths in the CSV:
   engine.rpm         nested field
   readings[].spd     field of each element of an array; the array is exploded,
                      so one message becomes one row per element
+
+The query has the same shape whatever the number of contracts: one stream in,
+one stream out, every field a CASE on the contract. A streaming checkpoint
+records the shape of its query, so a design with one branch per contract would
+break every downstream checkpoint each time a vendor adds a contract version.
 """
 
 from __future__ import annotations
@@ -139,10 +144,32 @@ def payload_schema(source_paths: list[str]) -> StructType:
     return schema
 
 
-def _source_column(path: str) -> Column:
-    if ARRAY_MARKER in path:
-        return F.col("reading." + path.split(ARRAY_MARKER + ".")[1])
-    return F.col("p." + path)
+def _source_column(path: str, payload: str) -> Column:
+    """The column a mapping path points to, inside the parsed payload column `payload`.
+
+    An array path reads the element at reading_index, so every message, batched
+    or not, is handled by the same expression.
+    """
+    if ARRAY_MARKER not in path:
+        return F.col(f"{payload}.{path}")
+    array_name, element_path = path.split(ARRAY_MARKER + ".")
+    value = F.col(f"{payload}.{array_name}").getItem(F.col("reading_index"))
+    for part in element_path.split("."):
+        value = value.getField(part)
+    return value
+
+
+def _case(branches: list[tuple[Column, Column]]) -> Column:
+    """CASE WHEN condition THEN value ... with no ELSE: null when no branch matches."""
+    expression = F.when(*branches[0])
+    for condition, value in branches[1:]:
+        expression = expression.when(condition, value)
+    return expression
+
+
+def _array_name(paths: list[str]) -> str | None:
+    arrays = {p.split(ARRAY_MARKER)[0] for p in paths if ARRAY_MARKER in p}
+    return arrays.pop() if arrays else None
 
 
 def _cast(value: Column, dtype: str) -> Column:
@@ -163,30 +190,15 @@ TRACE_COLUMNS = [
 ]
 
 
-def _normalize_contract(messages: DataFrame, contract: str, mappings: list[dict]) -> DataFrame:
-    paths = [m["source_path"] for m in mappings]
-    parsed = messages.filter(F.col("contract") == contract).withColumn(
-        "p", F.from_json("payload", payload_schema(paths))
-    )
-
-    array_paths = [p for p in paths if ARRAY_MARKER in p]
-    if array_paths:
-        array_name = array_paths[0].split(ARRAY_MARKER)[0]
-        rows = parsed.select("*", F.posexplode(f"p.{array_name}").alias("reading_index", "reading"))
-    else:
-        rows = parsed.withColumn("reading_index", F.lit(0))
-
-    by_target = {m["target_field"]: m for m in mappings}
-    fields = []
-    for name, dtype in STANDARD_FIELDS.items():
-        mapping = by_target[name]
-        convert = CONVERSIONS[mapping["conversion"]]
-        fields.append(_cast(convert(_source_column(mapping["source_path"])), dtype).alias(name))
-    return rows.select(*TRACE_COLUMNS, "reading_index", F.col("received_at").cast("timestamp").alias("received_at"), *fields)
-
-
 def normalize(checked: DataFrame, mappings_by_contract: dict[str, list[dict]]) -> DataFrame:
     """One row per reading, with the standard fields, for every message that passed its contract.
+
+    1. parse: each message's payload with its own contract's schema, into one
+       column per contract; only the matching contract's column is filled
+    2. explode: one row per reading, reading_index 0..n-1, where n is 1 for a
+       single-reading message and the array's size for a batched one
+    3. convert: each standard field is a CASE on the contract, applying that
+       contract's mapping and conversion
 
     measurement_id is derived from message_id and the reading's position in the
     message, so replaying the same message produces the same ids.
@@ -194,12 +206,47 @@ def normalize(checked: DataFrame, mappings_by_contract: dict[str, list[dict]]) -
     for contract, mappings in mappings_by_contract.items():
         validate_mappings(contract, mappings)
 
-    passed = checked.filter(F.col("record_status") == STATUS_PASS)
-    per_contract = [_normalize_contract(passed, c, m) for c, m in sorted(mappings_by_contract.items())]
+    contracts = sorted(mappings_by_contract)
+    payload_columns = {c: f"_payload_{i}" for i, c in enumerate(contracts)}
+    is_contract = {c: F.col("contract") == c for c in contracts}
 
-    readings = per_contract[0]
-    for other in per_contract[1:]:
-        readings = readings.unionByName(other)
+    passed = checked.filter(F.col("record_status") == STATUS_PASS)
+    parsed = passed.select(
+        "*",
+        *[
+            F.when(
+                is_contract[c],
+                F.from_json("payload", payload_schema([m["source_path"] for m in mappings_by_contract[c]])),
+            ).alias(payload_columns[c])
+            for c in contracts
+        ],
+    )
+
+    def readings_in_message(contract: str) -> Column:
+        array_name = _array_name([m["source_path"] for m in mappings_by_contract[contract]])
+        return F.size(F.col(f"{payload_columns[contract]}.{array_name}")) if array_name else F.lit(1)
+
+    reading_count = _case([(is_contract[c], readings_in_message(c)) for c in contracts])
+    indexes = F.when(reading_count > 0, F.sequence(F.lit(0), reading_count - 1)).otherwise(
+        F.array().cast("array<int>")
+    )
+    rows = parsed.withColumn("reading_index", F.explode(indexes))
+
+    def standard_value(contract: str, name: str, dtype: str) -> Column:
+        mapping = next(m for m in mappings_by_contract[contract] if m["target_field"] == name)
+        source = _source_column(mapping["source_path"], payload_columns[contract])
+        return _cast(CONVERSIONS[mapping["conversion"]](source), dtype)
+
+    fields = [
+        _case([(is_contract[c], standard_value(c, name, dtype)) for c in contracts]).alias(name)
+        for name, dtype in STANDARD_FIELDS.items()
+    ]
 
     measurement_id = F.sha2(F.concat_ws("|", "message_id", F.col("reading_index").cast("string")), 256)
-    return readings.select(measurement_id.alias("measurement_id"), "*")
+    return rows.select(
+        measurement_id.alias("measurement_id"),
+        *TRACE_COLUMNS,
+        "reading_index",
+        F.col("received_at").cast("timestamp").alias("received_at"),
+        *fields,
+    )

@@ -37,11 +37,23 @@ def spark() -> SparkSession:
         .config("spark.sql.session.timeZone", "UTC")
         .config("spark.ui.enabled", "false")
         .config("spark.sql.adaptive.enabled", "false")
+        # The default 1 GB is too small for a session of 400 tests, some of which
+        # simulate hours of fleet data.
+        .config("spark.driver.memory", "2g")
         .getOrCreate()
     )
     session.sparkContext.setLogLevel("ERROR")
     yield session
     session.stop()
+
+
+@pytest.fixture(autouse=True, scope="module")
+def _release_cached_data():
+    """Free what a test file cached once it finishes, so it cannot starve the files after it."""
+    yield
+    session = SparkSession.getActiveSession()
+    if session is not None:
+        session.catalog.clearCache()
 
 
 def _bronze_schema() -> StructType:

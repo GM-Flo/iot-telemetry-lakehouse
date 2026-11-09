@@ -167,4 +167,6 @@ def quarantine_registry_mismatches(matched: DataFrame) -> DataFrame:
         raw_payload=F.lit(None),
         measurement_id=F.col("measurement_id"),
         reading_index=F.col("reading_index"),
+        device_id=F.col("device_id"),
+        event_ts=F.col("event_ts"),
     )

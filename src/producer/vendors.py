@@ -14,9 +14,11 @@ bronze. Silver is responsible for turning four dialects into one schema.
 
 from __future__ import annotations
 
+import math
 import random
 import uuid
-from datetime import datetime
+import zlib
+from datetime import datetime, timezone
 
 from src.producer.registry import VENDORS
 
@@ -87,6 +89,54 @@ def format_fpl(r: dict) -> dict:
         "harshBrakeEvents": r["harsh_brake_count"],
         "harshAccelEvents": r["harsh_accel_count"],
     }
+
+
+FPL_V2_CONTRACT = "fpl.telemetry.v2"
+
+
+def _iso_utc(ts: datetime) -> str:
+    return ts.astimezone(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def _ambient_temp_c(ts: datetime) -> float:
+    """Outside air temperature: coolest before dawn, warmest mid-afternoon (local UTC-6)."""
+    local_hour = (ts.hour - 6) % 24 + ts.minute / 60
+    return round(22.0 + 7.0 * math.sin((local_hour - 9) / 24 * 2 * math.pi), 1)
+
+
+def format_fpl_v2(r: dict) -> dict:
+    """FleetPulse firmware 2: metric units, nested engine and location, ISO 8601 timestamps,
+    and a new outside-temperature field."""
+    return {
+        "deviceId": r["device_id"],
+        "vin": r["vin"],
+        "accountId": r["client_id"],
+        "driverFobId": r["driver_fob_id"],
+        "timestamp": _iso_utc(r["event_ts"]),
+        "sentAt": _iso_utc(r["emitted_at"]),
+        "ignitionOn": r["ignition_on"],
+        "speedKph": r["speed_kph"],
+        "engine": {
+            "rpm": r["engine_rpm"],
+            "tempC": r["engine_temp_c"],
+            "coolantPressureKpa": r["coolant_pressure_kpa"],
+            "oilPressureKpa": r["oil_pressure_kpa"],
+        },
+        "batteryVolts": r["battery_voltage"],
+        "fuelPct": r["fuel_level_pct"],
+        "odometerKm": r["odometer_km"],
+        "location": {"lat": r["latitude"], "lng": r["longitude"], "heading": r["heading_deg"]},
+        "faultCodes": [r["dtc_code"]] if r["dtc_code"] else [],
+        "harshBrakeEvents": r["harsh_brake_count"],
+        "harshAccelEvents": r["harsh_accel_count"],
+        "ambientTempC": _ambient_temp_c(r["event_ts"]),
+    }
+
+
+def is_upgraded(device_id: str, share: float) -> bool:
+    """Whether a device runs the new firmware. Decided by the device id alone, so a
+    device stays upgraded across producer runs, and a larger share only adds devices."""
+    return zlib.crc32(device_id.encode()) % 1000 < share * 1000
 
 
 def format_gtk(r: dict) -> dict:
@@ -165,9 +215,10 @@ class Gateway:
     readings are held here until a batch fills.
     """
 
-    def __init__(self, rng: random.Random, ats_batch_size: int = 3) -> None:
+    def __init__(self, rng: random.Random, ats_batch_size: int = 3, fpl_v2_share: float = 0.0) -> None:
         self.rng = rng
         self.ats_batch_size = ats_batch_size
+        self.fpl_v2_share = fpl_v2_share
         self._ats_buffers: dict[str, list[dict]] = {}
 
     @staticmethod
@@ -176,12 +227,12 @@ class Gateway:
         # ids on every producer run, and a message id must be unique forever.
         return str(uuid.uuid4())
 
-    def envelope(self, vendor_id: str, payload: dict, received_at: datetime) -> dict:
+    def envelope(self, vendor_id: str, payload: dict, received_at: datetime, contract: str | None = None) -> dict:
         return {
             "envelope_version": ENVELOPE_VERSION,
             "message_id": self._message_id(),
             "vendor_id": vendor_id,
-            "contract": VENDORS[vendor_id].contract,
+            "contract": contract or VENDORS[vendor_id].contract,
             "received_at": received_at.isoformat(),
             "payload": payload,
         }
@@ -204,6 +255,11 @@ class Gateway:
                     out.append((r["device_id"],
                                 self.envelope("ats", format_ats(buffer), received_at)))
                     self._ats_buffers[r["device_id"]] = []
+                continue
+
+            if vendor_id == "fpl" and is_upgraded(r["device_id"], self.fpl_v2_share):
+                out.append((r["device_id"],
+                            self.envelope("fpl", format_fpl_v2(r), received_at, contract=FPL_V2_CONTRACT)))
                 continue
 
             payload = SINGLE_READING_FORMATTERS[vendor_id](r)

@@ -10,3 +10,8 @@ device_silent_after,15,minutes,No message from a device for this long marks it s
 minimum_stop_between_trips,600,seconds,Ignition off for less than this joins two drives into one trip
 minimum_speeding_duration,240,seconds,Speed must stay above the limit at least this long to count as speeding
 minimum_refuel_increase,5,percent,A rise in fuel level smaller than this is sensor noise or sloshing, not a refuel
+health_critical_temperature_seconds,300,seconds,A day with at least this long above the critical engine temperature makes a vehicle critical
+health_warning_temperature_seconds,600,seconds,A day with at least this long above the warning engine temperature needs attention
+safety_harsh_event_weight,5,points,Safety score points lost per harsh event per 100 km
+safety_speeding_minute_weight,2,points,Safety score points lost per minute of sustained speeding per 100 km
+safety_minimum_distance,10,km,A driver with less distance in the period gets no score: too little driving to judge

@@ -109,6 +109,8 @@ QUARANTINE_COLUMNS = [
     "message_id",
     "measurement_id",
     "reading_index",
+    "device_id",
+    "event_ts",
     "vendor_id",
     "raw_payload",
     "quarantine_stage",
@@ -131,17 +133,23 @@ def to_quarantine(
     raw_payload: Column | None = None,
     measurement_id: Column | None = None,
     reading_index: Column | None = None,
+    device_id: Column | None = None,
+    event_ts: Column | None = None,
 ) -> DataFrame:
     """Shape failed rows the same way for every quarantine table.
 
     reason is a short fixed category for counting and alerting; detail is the
     free text a person reads when fixing one message. Message-level stages leave
-    measurement_id and reading_index empty; reading-level stages fill them.
+    measurement_id, reading_index, device_id and event_ts empty; reading-level
+    stages fill them, so a quarantined reading says which device and when, and
+    can be counted by the same identity as a stored one.
     """
     return failed.select(
         "message_id",
         (measurement_id if measurement_id is not None else F.lit(None)).cast("string").alias("measurement_id"),
         (reading_index if reading_index is not None else F.lit(None)).cast("int").alias("reading_index"),
+        (device_id if device_id is not None else F.lit(None)).cast("string").alias("device_id"),
+        (event_ts if event_ts is not None else F.lit(None)).cast("timestamp").alias("event_ts"),
         "vendor_id",
         (raw_payload if raw_payload is not None else F.col("raw_payload")).cast("string").alias("raw_payload"),
         F.lit(stage).alias("quarantine_stage"),

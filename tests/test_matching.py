@@ -223,5 +223,6 @@ class TestReconciliationAndQuarantine:
         assert quarantined.columns == QUARANTINE_COLUMNS
         assert row["quarantine_stage"] == "matching"
         assert row["measurement_id"] is not None
+        assert row["device_id"] is not None and row["event_ts"] is not None
         assert row["raw_payload"] is None
         assert quarantined.count() == matched.filter("record_status = 'fail'").count()
