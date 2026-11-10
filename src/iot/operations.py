@@ -35,6 +35,8 @@ def pipeline_flow_runs(event_log: DataFrame) -> DataFrame:
     row counts are summed. AUTO CDC flows report upserted rather than output rows.
     The platform also logs timing events under internal names such as
     pipelines.flowTimeMetrics.missingFlowName; those are not flows and are left out.
+    Flows log executor-time events without a status, even after they complete, so
+    the final status is the last event that has one.
     """
     flow_name = F.col("origin.flow_name")
     is_flow = flow_name.isNotNull() & ~flow_name.startswith("pipelines.")
@@ -54,7 +56,7 @@ def pipeline_flow_runs(event_log: DataFrame) -> DataFrame:
         ).alias("expectation_failures"),
     )
     return progress.groupBy("update_id", "flow_name").agg(
-        F.max_by("status", "timestamp").alias("final_status"),
+        F.max_by("status", F.when(F.col("status").isNotNull(), F.col("timestamp"))).alias("final_status"),
         F.coalesce(F.sum("rows_written"), F.lit(0)).alias("rows_written"),
         F.coalesce(F.sum("expectation_failures"), F.lit(0)).alias("expectation_failures"),
     )
