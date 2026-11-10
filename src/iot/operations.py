@@ -16,6 +16,16 @@ from pyspark.sql.types import ArrayType, LongType, StringType, StructField, Stru
 
 TERMINAL_STATES = ("COMPLETED", "FAILED", "CANCELED")
 
+# The tables rejected readings land in. Matched on the table name, the last part of a
+# flow name such as iot_prod.silver.quarantine_invalid_values: other tables have
+# "quarantine" in their name too, such as operations.quarantine_summary_by_hour.
+QUARANTINE_TABLES = (
+    "quarantine_unparseable_messages",
+    "quarantine_contract_violations",
+    "quarantine_invalid_values",
+    "quarantine_registry_mismatches",
+)
+
 EXPECTATIONS_SCHEMA = ArrayType(StructType([
     StructField("name", StringType()),
     StructField("dataset", StringType()),
@@ -76,7 +86,7 @@ def pipeline_runs(event_log: DataFrame) -> DataFrame:
     )
 
     flows = pipeline_flow_runs(event_log)
-    quarantine = F.col("flow_name").contains("quarantine")
+    quarantine = F.element_at(F.split("flow_name", r"\."), -1).isin(*QUARANTINE_TABLES)
     totals = flows.groupBy("update_id").agg(
         F.count("*").alias("flows"),
         F.sum(F.when(F.col("final_status") == "FAILED", 1).otherwise(0)).alias("failed_flows"),

@@ -48,6 +48,7 @@ def event_log(spark):
         flow_event("u1", "vehicle_measurements", 40, "COMPLETED", upserted=3643),
         flow_event("u1", "vehicle_measurements", 41, None),
         flow_event("u1", "device_assignments", 45, "COMPLETED", rows=30, failed=2),
+        flow_event("u1", "iot_dev.operations.quarantine_summary_by_hour", 47, "COMPLETED", rows=60),
         flow_event("u1", "pipelines.flowTimeMetrics.missingFlowName", 46, None),
         update_event("u1", 300, "COMPLETED"),
         update_event("u2", 400, "RUNNING"),
@@ -70,6 +71,13 @@ class TestPipelineFlowRuns:
         flows = {r["flow_name"]: r for r in pipeline_flow_runs(event_log).filter("update_id = 'u1'").collect()}
         assert flows["vehicle_measurements"]["final_status"] == "COMPLETED"
 
+    def test_only_quarantine_tables_count_as_quarantined(self, spark, event_log):
+        qualified = event_log.unionByName(spark.createDataFrame(
+            [flow_event("u1", "iot_dev.silver.quarantine_invalid_values", 48, "COMPLETED", rows=7)],
+            EVENT_LOG_SCHEMA,
+        ))
+        assert pipeline_runs(qualified).first()["rows_quarantined"] == 25 + 7
+
     def test_internal_platform_events_are_not_flows(self, event_log):
         names = {r["flow_name"] for r in pipeline_flow_runs(event_log).collect()}
         assert not any(n.startswith("pipelines.") for n in names)
@@ -88,7 +96,7 @@ class TestPipelineRuns:
         run = pipeline_runs(event_log).first()
         assert run["final_state"] == "COMPLETED"
         assert run["duration_seconds"] == 300
-        assert run["flows"] == 3
+        assert run["flows"] == 4
         assert run["failed_flows"] == 0
         assert run["rows_to_vehicle_measurements"] == 3643
         assert run["rows_quarantined"] == 25
