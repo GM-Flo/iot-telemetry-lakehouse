@@ -43,12 +43,13 @@ The full table catalogue is in [ARCHITECTURE.md](ARCHITECTURE.md). Naming rules:
 
 | Rule | Example |
 |---|---|
-| Plural snake_case, describing what the rows are | `vehicle_trips`, `driver_behavior_events` |
+| Bronze and silver: plural snake_case, describing what the rows are | `vehicle_trips`, `driver_behavior_events` |
 | Bronze tables start with `raw_` | `raw_telemetry_messages` |
 | Things that happen end in `_events` | `geofence_events` |
 | Quarantine tables start with `quarantine_` | `quarantine_registry_mismatches` |
-| Gold dimensions and facts start with `dim_` and `fact_` | `dim_devices`, `fact_vehicle_trips` |
-| Gold data products are named for what they answer, with their grain | `driver_safety_daily` |
+| Gold dimensions and facts start with `dim_` and `fact_`, named for their grain, singular | `dim_vehicle`, `fact_trip`, `fact_vehicle_day` |
+| Gold data products are named for what they answer | `vehicle_health`, `driver_safety` |
+| Operations tables describe one row | `pipeline_runs`, `silver_reconciliation` |
 | US spelling | `behavior`, not `behaviour` |
 
 ## Other Databricks objects
@@ -57,9 +58,9 @@ The full table catalogue is in [ARCHITECTURE.md](ARCHITECTURE.md). Naming rules:
 |---|---|---|
 | Volume | purpose | `checkpoints` |
 | Checkpoint path | `/Volumes/<catalog>/<schema>/checkpoints/<table>` | one directory per stream |
-| Job | `<layer>_<what it does>` | `bronze_ingest_vendor_messages`, `silver_validate_and_normalize` |
+| Job | `<layer>_<what it does>`, or what it does across layers | `bronze_ingest_vendor_messages`, `lakehouse_refresh`, `setup_environment` |
 | Notebook | `<NN>_<layer>_<what it does>.py` | `01_bronze_ingest_vendor_messages.py` |
-| Pipeline | `<layers>_<what it does>` | `silver_gold_telemetry` |
+| Pipeline | `<layer>_<what it does>` | `silver_validate_and_normalize`, `silver_derive_events`, `gold_build` |
 | Secret scope | `iot` | |
 | Secret key | `eventhub-<access>-conn-<env>` | `eventhub-listen-conn-dev` |
 
@@ -72,9 +73,9 @@ Snake case for every Databricks object. Lowercase with dashes for every Azure re
 | Event time | ends in `_ts` | `event_ts` |
 | System time | ends in `_at` | `received_at`, `quarantined_at` |
 | Units | included in the name | `engine_temperature_celsius`, `speed_kph`, `distance_km` |
-| Booleans | `is_` or `has_` | `is_late_arrival`, `has_fault_code` |
+| Booleans | `is_` or `has_` | `is_after_hours`, `is_unknown_driver` |
 | Surrogate keys | ends in `_key` | `vehicle_key` |
-| Hashes | ends in `_hash` | `record_hash`, `attribute_hash` |
+| Identifiers derived by hashing | ends in `_id` or `_key` | `measurement_id`, `event_id`, `vehicle_key` |
 
 ## Tags
 
