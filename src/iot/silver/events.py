@@ -158,14 +158,23 @@ def ignition_events(measurements: DataFrame) -> DataFrame:
 
 
 def vehicle_trips(measurements: DataFrame, vehicles: DataFrame, minimum_stop_seconds: float) -> DataFrame:
-    """One row per journey.
+    """One row per journey by one driver.
 
     Gaps and islands over readings with the engine running:
       1. gap   = time since the previous running reading of the same vehicle
-      2. a new trip starts when there is no previous one, or the gap is longer
-         than minimum_stop_seconds (a short stop at a pump stays one trip)
+      2. a new trip starts when there is no previous one, when the gap is longer
+         than minimum_stop_seconds (a short stop at a pump stays one trip), or
+         when a different driver's fob takes over
       3. a running total of "new trip" flags numbers the trips
       4. each numbered group is aggregated into one row
+
+    Splitting at a change of driver matters at a shift handover: the engine can
+    keep running while drivers swap, and a 24x7 vehicle may never switch off.
+    Without it, one trip would span several drivers and all its distance would
+    go to whoever started it. The fob is carried forward over readings that
+    report none, as driver_change_events does, so a missing fob is not a change.
+    The step between the last reading of one driver and the first of the next
+    belongs to neither trip.
 
     A trip is complete once the vehicle has been seen minimum_stop_seconds past
     its end. Until then it may still continue, and its row can change.
@@ -179,7 +188,11 @@ def vehicle_trips(measurements: DataFrame, vehicles: DataFrame, minimum_stop_sec
 
     previous_ts = F.lag("event_ts").over(window)
     gap_seconds = F.col("event_ts").cast("double") - previous_ts.cast("double")
-    new_trip = previous_ts.isNull() | (gap_seconds > minimum_stop_seconds)
+    fob = F.last("driver_fob_id", ignorenulls=True).over(window.rowsBetween(Window.unboundedPreceding, 0))
+    running = running.withColumn("_fob", fob)
+    previous_fob = F.lag("_fob").over(window)
+    driver_changed = F.col("_fob").isNotNull() & previous_fob.isNotNull() & (F.col("_fob") != previous_fob)
+    new_trip = previous_ts.isNull() | (gap_seconds > minimum_stop_seconds) | driver_changed
 
     # Distance and time to the next running reading in the same trip, for GPS
     # distance and idle time. The last reading of a trip contributes nothing.
@@ -211,7 +224,9 @@ def vehicle_trips(measurements: DataFrame, vehicles: DataFrame, minimum_stop_sec
     trips = steps.groupBy("vehicle_id", "trip_number").agg(
         F.first("client_id").alias("client_id"),
         F.min_by("device_id", "event_ts").alias("device_id"),
-        F.min_by("driver_id", "event_ts").alias("driver_id"),
+        # The driver of the first reading that reports a fob: a driver may log in
+        # a moment after starting the engine.
+        F.min_by("driver_id", F.when(F.col("driver_fob_id").isNotNull(), F.col("event_ts"))).alias("driver_id"),
         F.min("event_ts").alias("start_ts"),
         F.max("event_ts").alias("end_ts"),
         F.count("*").alias("readings"),

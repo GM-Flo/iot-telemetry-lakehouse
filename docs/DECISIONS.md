@@ -30,6 +30,7 @@ because the failure is the reason.
 | [022](#adr-022-late-registration-is-fixed-forward-not-replayed) | Late registration is fixed forward, not replayed | Operations |
 | [023](#adr-023-a-silent-day-is-no_data-not-healthy) | A silent day is `no_data`, not healthy | Gold |
 | [024](#adr-024-single-node-clusters-one-at-a-time) | Single-node clusters, one at a time | Platform |
+| [025](#adr-025-a-trip-is-one-drivers-journey) | A trip is one driver's journey | Silver |
 
 ---
 
@@ -393,3 +394,26 @@ the refresh job runs its five steps strictly in sequence. Photon is off.
 
 **Consequences.** About 25 minutes of each refresh is cluster start-up. Instance pools or
 serverless compute would remove most of it; see [LIMITATIONS.md](LIMITATIONS.md).
+
+## ADR-025: A trip is one driver's journey
+
+**Context.** A trip ran from ignition on to ignition off, and belonged to the driver who
+started it. At a shift handover the engine can keep running while drivers swap, and the
+24x7 fleets never switched off at all. In prod, single "trips" ran for four days and over
+5,000 km with four different drivers. Harsh events were counted for whoever was driving,
+but distance only for the driver who started the trip, so second-shift drivers showed
+hundreds of harsh events per 100 km and safety scores of 0.
+
+**Decision.** A trip also ends when a different driver's fob takes over. The fob is carried
+forward over readings that report none, so a missing fob is not a change; an unregistered
+fob is a driver of its own, with no registered driver ID. A trip's driver is the first one to
+log in during it.
+
+**Alternatives.** Keeping ignition-based trips and computing each driver's distance from the
+odometer while their fob was in: it fixes the scores, but after-hours trips and every other
+per-trip measure would still belong to the wrong driver.
+
+**Consequences.** More, shorter trips, each with the right driver; distance, scores and
+after-hours trips are attributed correctly. Vehicle totals do not change. The step between the
+last reading of one driver and the first of the next, one reading interval, belongs to
+neither trip.

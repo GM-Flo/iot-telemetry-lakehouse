@@ -105,6 +105,37 @@ class TestTrips:
         assert len(trips) == 2
         assert trips[0]["end_ts"] < trips[1]["start_ts"]
 
+    def test_a_change_of_driver_splits_the_trip(self, measurements, vehicles):
+        """A shift handover with the engine running: two trips, one per driver."""
+        rows = [reading("V1", m, fob="FOB-A", driver="D-A") for m in range(0, 10)]
+        rows += [reading("V1", m, fob="FOB-B", driver="D-B") for m in range(10, 20)]
+        trips = trips_of(measurements, vehicles, rows)
+
+        assert [t["driver_id"] for t in trips] == ["D-A", "D-B"]
+        assert [t["distance_km"] for t in trips] == [9.0, 9.0]
+        assert trips[0]["end_ts"] < trips[1]["start_ts"]
+
+    def test_a_reading_without_a_fob_does_not_split_the_trip(self, measurements, vehicles):
+        rows = [reading("V1", m, fob="FOB-A", driver="D-A") for m in range(0, 5)]
+        rows += [reading("V1", m, fob=None, driver=None) for m in range(5, 8)]
+        rows += [reading("V1", m, fob="FOB-A", driver="D-A") for m in range(8, 12)]
+        trips = trips_of(measurements, vehicles, rows)
+
+        assert len(trips) == 1 and trips[0]["driver_id"] == "D-A"
+
+    def test_the_trip_driver_is_the_first_to_log_in(self, measurements, vehicles):
+        rows = [reading("V1", m, fob=None, driver=None) for m in range(0, 3)]
+        rows += [reading("V1", m, fob="FOB-A", driver="D-A") for m in range(3, 10)]
+        assert [t["driver_id"] for t in trips_of(measurements, vehicles, rows)] == ["D-A"]
+
+    def test_an_unregistered_fob_is_a_driver_of_its_own(self, measurements, vehicles):
+        """A temporary driver's fob is not in the registry, so its driver_id is null, but it is
+        still a different person: the trip splits and the new trip has no registered driver."""
+        rows = [reading("V1", m, fob="FOB-A", driver="D-A") for m in range(0, 5)]
+        rows += [reading("V1", m, fob="FOB-TEMP", driver=None) for m in range(5, 10)]
+        trips = trips_of(measurements, vehicles, rows)
+        assert [t["driver_id"] for t in trips] == ["D-A", None]
+
     def test_trip_measures(self, measurements, vehicles):
         rows = [reading("V1", m, odometer=1000.0 + m, fuel=80.0 - m) for m in range(0, 31)]
         trip = trips_of(measurements, vehicles, rows)[0]

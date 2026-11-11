@@ -243,7 +243,7 @@ holds, then aggregate each group), or bucket counting.
 | Table | One row is | Rule |
 |---|---|---|
 | `vehicle_ignition_events` | The engine switching on or off | Change in `ignition_on` |
-| `vehicle_trips` | One journey | Ignition on to off; a stop shorter than 10 minutes joins two drives into one trip |
+| `vehicle_trips` | One journey by one driver | Ignition on to off; a stop shorter than 10 minutes joins two drives into one trip; a different driver's fob taking over starts a new trip |
 | `vehicle_idling_events` | One idle period | Engine on, stationary, at least 2 minutes |
 | `vehicle_speeding_events` | One sustained overspeed | Above 120 km/h for at least 4 minutes |
 | `driver_change_events` | A different fob taking over a vehicle | Change in fob |
