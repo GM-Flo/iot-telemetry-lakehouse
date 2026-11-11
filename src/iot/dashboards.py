@@ -20,7 +20,7 @@ from pathlib import Path
 DASHBOARDS = Path(__file__).resolve().parents[2] / "dashboards"
 GRID_WIDTH = 6
 
-STATUS_COLORS = {"critical": "#E5484D", "attention": "#F5A524", "ok": "#30A46C"}
+STATUS_COLORS = {"critical": "#E5484D", "attention": "#F5A524", "ok": "#30A46C", "no_data": "#8B8D98"}
 SERIES_COLORS = {"After-hours trip": "#8E4EC6", "Geofence exit": "#F5A524", "No registered driver": "#E5484D"}
 
 USD = {"type": "number-currency", "currencyCode": "USD", "decimalPlaces": {"type": "max", "places": 2}}
@@ -288,15 +288,15 @@ FLEET_OPERATIONS = [
         "Vehicle health",
         "Which vehicles need the workshop, and is the fleet getting better or worse? **Critical**: five minutes or "
         "more above the critical engine temperature, or a high-severity fault code. **Attention**: ten minutes or "
-        "more above the warning temperature, or any fault code. Counters show the latest day; the line under each "
-        "is its trend.",
+        "more above the warning temperature, or any fault code. **Not reporting**: no reading all day, so its health "
+        "is unknown. Counters show the latest day; the line under each is its trend.",
         [
             [Filter("date-range", "local_date", "Days", VEHICLE_DATASETS),
              Filter("multi-select", "client_id", "Client", VEHICLE_DATASETS),
              Filter("multi-select", "vehicle_id", "Vehicle", VEHICLE_DATASETS)],
             [_trend_counter("vehicle_days", "is_critical", "Critical vehicles"),
              _trend_counter("vehicle_days", "is_attention", "Vehicles needing attention"),
-             _trend_counter("vehicle_days", "is_ok", "Healthy vehicles")],
+             _trend_counter("vehicle_days", "is_no_data", "Vehicles not reporting")],
             [Table("vehicles_needing_action", "Send to the workshop: newest day first, worst first", 6, 7, columns=[
                 Field("local_date", "Day"), Field("vehicle_id", "Vehicle"), Field("vin", "VIN"),
                 Field("make", "Make"), Field("model", "Model"), Field("health_status", "Status"),

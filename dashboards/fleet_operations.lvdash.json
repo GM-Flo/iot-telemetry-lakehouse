@@ -14,6 +14,7 @@
         "  CASE WHEN health_status = 'critical'  THEN 1 ELSE 0 END AS is_critical,\n",
         "  CASE WHEN health_status = 'attention' THEN 1 ELSE 0 END AS is_attention,\n",
         "  CASE WHEN health_status = 'ok'        THEN 1 ELSE 0 END AS is_ok,\n",
+        "  CASE WHEN health_status = 'no_data'   THEN 1 ELSE 0 END AS is_no_data,\n",
         "  minutes_above_warning_temperature,\n",
         "  minutes_above_critical_temperature,\n",
         "  distinct_fault_codes,\n",
@@ -40,7 +41,7 @@
         "  distinct_fault_codes,\n",
         "  max_engine_temperature_celsius\n",
         "FROM vehicle_health\n",
-        "WHERE health_status <> 'ok'\n",
+        "WHERE health_status IN ('critical', 'attention')\n",
         "ORDER BY local_date DESC,\n",
         "         CASE health_status WHEN 'critical' THEN 1 ELSE 2 END,\n",
         "         minutes_above_critical_temperature DESC,\n",
@@ -237,7 +238,7 @@
             "name": "vehicle_health_1_0",
             "multilineTextboxSpec": {
               "lines": [
-                "Which vehicles need the workshop, and is the fleet getting better or worse? **Critical**: five minutes or more above the critical engine temperature, or a high-severity fault code. **Attention**: ten minutes or more above the warning temperature, or any fault code. Counters show the latest day; the line under each is its trend."
+                "Which vehicles need the workshop, and is the fleet getting better or worse? **Critical**: five minutes or more above the critical engine temperature, or a high-severity fault code. **Attention**: ten minutes or more above the warning temperature, or any fault code. **Not reporting**: no reading all day, so its health is unknown. Counters show the latest day; the line under each is its trend."
               ]
             }
           },
@@ -549,8 +550,8 @@
                   "datasetName": "vehicle_days",
                   "fields": [
                     {
-                      "name": "sum(is_ok)",
-                      "expression": "SUM(`is_ok`)"
+                      "name": "sum(is_no_data)",
+                      "expression": "SUM(`is_no_data`)"
                     },
                     {
                       "name": "daily(local_date)",
@@ -566,8 +567,8 @@
               "widgetType": "counter",
               "encodings": {
                 "value": {
-                  "fieldName": "sum(is_ok)",
-                  "displayName": "Healthy vehicles",
+                  "fieldName": "sum(is_no_data)",
+                  "displayName": "Vehicles not reporting",
                   "format": {
                     "type": "number",
                     "decimalPlaces": {
@@ -582,7 +583,7 @@
               },
               "frame": {
                 "showTitle": true,
-                "title": "Healthy vehicles"
+                "title": "Vehicles not reporting"
               }
             }
           },
@@ -811,6 +812,10 @@
                       {
                         "value": "ok",
                         "color": "#30A46C"
+                      },
+                      {
+                        "value": "no_data",
+                        "color": "#8B8D98"
                       }
                     ]
                   }

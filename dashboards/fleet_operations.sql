@@ -21,6 +21,7 @@ SELECT
   CASE WHEN health_status = 'critical'  THEN 1 ELSE 0 END AS is_critical,
   CASE WHEN health_status = 'attention' THEN 1 ELSE 0 END AS is_attention,
   CASE WHEN health_status = 'ok'        THEN 1 ELSE 0 END AS is_ok,
+  CASE WHEN health_status = 'no_data'   THEN 1 ELSE 0 END AS is_no_data,
   minutes_above_warning_temperature,
   minutes_above_critical_temperature,
   distinct_fault_codes,
@@ -43,7 +44,7 @@ SELECT
   distinct_fault_codes,
   max_engine_temperature_celsius
 FROM vehicle_health
-WHERE health_status <> 'ok'
+WHERE health_status IN ('critical', 'attention')
 ORDER BY local_date DESC,
          CASE health_status WHEN 'critical' THEN 1 ELSE 2 END,
          minutes_above_critical_temperature DESC,

@@ -33,6 +33,7 @@ VEHICLE_HEALTH_SCHEMA = """
 STATUS_CRITICAL = "critical"
 STATUS_ATTENTION = "attention"
 STATUS_OK = "ok"
+STATUS_NO_DATA = "no_data"
 
 
 def _per_100_km(count: Column, distance_km: Column) -> Column:
@@ -46,6 +47,8 @@ def _safe_ratio(part: Column, whole: Column, digits: int = 4) -> Column:
 def vehicle_health(vehicle_days: DataFrame, vehicles: DataFrame, critical_seconds: float, warning_seconds: float) -> DataFrame:
     """One row per vehicle per day with a health status.
 
+      no_data    no reading stored all day: the vehicle was expected to report and
+                 stayed silent, so nothing is known about its health
       critical   at least critical_seconds above the critical temperature,
                  or a high-severity fault code
       attention  at least warning_seconds above the warning temperature,
@@ -55,7 +58,8 @@ def vehicle_health(vehicle_days: DataFrame, vehicles: DataFrame, critical_second
     Fault codes are counted as distinct codes, so a flapping code is one problem.
     """
     status = (
-        F.when(
+        F.when(F.col("readings") == 0, F.lit(STATUS_NO_DATA))
+        .when(
             (F.col("seconds_above_critical_temperature") >= critical_seconds)
             | (F.col("distinct_high_severity_codes") > 0),
             F.lit(STATUS_CRITICAL),

@@ -57,6 +57,13 @@ def vehicle_day(vehicle, day, critical_seconds=0, after_hours=0):
             100.0, 3600, 300, 10.0, 20.0, 2.0, 0.0, after_hours, 0.0, 0)
 
 
+def silent_vehicle_day(vehicle, day):
+    """A day the vehicle was expected to report and sent nothing: silent all day, no readings."""
+    key = 20261107 if day == DAY1 else 20261108
+    return (f"vk-{vehicle}", "ck1", key, vehicle, "C001", day, 0, 0, 0, 0, 0, 1440, 0, None, 0,
+            0.0, 0, 0, 0.0, 0.0, 0.0, 0.0, 0, 0.0, 0)
+
+
 def driver_day(driver, key, day, distance, harsh):
     return (key, "ck1", 20261108, driver, "C001", day, 1, distance, 3600, 0, 0, harsh, 0, 0, 0)
 
@@ -79,7 +86,7 @@ def catalog(spark):
 
     vehicle_days = spark.createDataFrame(
         [vehicle_day("V1", DAY1), vehicle_day("V1", DAY2, critical_seconds=600, after_hours=1),
-         vehicle_day("V2", DAY2)],
+         vehicle_day("V2", DAY2), silent_vehicle_day("V2", DAY1)],
         VEHICLE_DAY_SCHEMA,
     )
     dim_vehicle = spark.createDataFrame(
@@ -159,7 +166,12 @@ def run(catalog, name):
 
 def test_each_vehicle_day_has_exactly_one_status_flag(catalog):
     for row in run(catalog, "vehicle_days"):
-        assert row["is_critical"] + row["is_attention"] + row["is_ok"] == 1
+        assert row["is_critical"] + row["is_attention"] + row["is_ok"] + row["is_no_data"] == 1
+
+
+def test_a_silent_day_is_not_reported_as_healthy(catalog):
+    silent = [r for r in run(catalog, "vehicle_days") if r["vehicle_id"] == "V2" and r["local_date"] == DAY1]
+    assert [(r["health_status"], r["is_ok"], r["is_no_data"]) for r in silent] == [("no_data", 0, 1)]
 
 
 def test_action_list_holds_only_vehicles_that_need_action(catalog):

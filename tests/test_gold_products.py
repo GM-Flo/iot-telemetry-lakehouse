@@ -108,6 +108,8 @@ class TestVehicleHealth:
         ({"distinct_fault_codes": 1}, "attention"),
         ({"seconds_above_critical_temperature": 300}, "critical"),
         ({"distinct_fault_codes": 1, "distinct_high_severity_codes": 1}, "critical"),
+        ({"readings": 0}, "no_data"),
+        ({"readings": 0, "max_engine_temperature_celsius": None}, "no_data"),
     ])
     def test_status_rules(self, vehicle_days, dim_vehicle, change, expected):
         assert self.status(vehicle_days, dim_vehicle, **change)["health_status"] == expected
