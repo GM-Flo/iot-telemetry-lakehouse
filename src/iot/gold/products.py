@@ -18,6 +18,7 @@ from pyspark.sql import functions as F
 
 from src.iot.gold.dimensions import UNKNOWN, UNKNOWN_KEY
 from src.iot.gold.facts import local_time, vehicle_time_zones
+from src.iot.silver.telemetry import ENVELOPE_PARSE_OPTIONS, ENVELOPE_SCHEMA
 
 # Spark DDL of vehicle_health with its VIN mask; {vin_mask} is filled in by the
 # pipeline. A test checks it against what vehicle_health() returns, so the two
@@ -221,9 +222,12 @@ def vendor_data_quality(
     validity and matching judge single readings (an AutoSense message carries
     several). Mixing them in one rate would be wrong.
 
-    The vendor is the envelope's vendor_id, read the same way silver reads it, so
-    the counts here and in quarantine agree. Messages too broken to name a vendor
-    count under "unknown". Days are UTC: a vendor serves every region.
+    The vendor is the envelope's vendor_id, read with the parser and options silver
+    uses, so the counts here and in quarantine agree. That matters for JSON cut off
+    part-way: silver's permissive parser still recovers the vendor named before the
+    cut, and the message counts against that vendor on both sides. Messages too
+    broken to name a vendor count under "unknown". Days are UTC: a vendor serves
+    every region.
     """
     def vendor_day(df: DataFrame, vendor: Column) -> DataFrame:
         return df.select(
@@ -232,7 +236,8 @@ def vendor_data_quality(
         )
 
     keys = ["vendor_id", "utc_date"]
-    received = vendor_day(bronze_messages, F.get_json_object("raw_payload", "$.vendor_id")).groupBy(*keys).agg(
+    envelope_vendor = F.from_json("raw_payload", ENVELOPE_SCHEMA, ENVELOPE_PARSE_OPTIONS)["vendor_id"]
+    received = vendor_day(bronze_messages, envelope_vendor).groupBy(*keys).agg(
         F.count("*").alias("messages_received")
     )
     stored = vendor_day(measurements, F.col("vendor_id")).groupBy(*keys).agg(F.count("*").alias("readings_stored"))

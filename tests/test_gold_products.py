@@ -18,6 +18,7 @@ from src.iot.gold.products import (
     vehicle_health,
     vendor_data_quality,
 )
+from src.iot.silver.telemetry import parse_envelope
 
 UTC = timezone.utc
 DAY = date(2026, 11, 8)
@@ -232,3 +233,28 @@ class TestVendorDataQuality:
         assert rows["ats"]["message_quarantine_rate"] == 0.25
         assert rows["ats"]["reading_quarantine_rate"] == 0.25  # 3 of 12 readings
         assert (rows[UNKNOWN]["messages_received"], rows[UNKNOWN]["messages_quarantined"]) == (1, 1)
+
+    def test_broken_messages_count_against_the_same_vendor_as_in_quarantine(self, spark):
+        """Silver's permissive parser can recover the vendor from JSON cut off part-way
+        (Databricks does; plain Spark may not) and quarantines the message under it. The
+        received count must name the same vendor, whatever the parser recovers, or a vendor
+        looks better than it is and "unknown" never reaches 100%."""
+        t = datetime(2026, 11, 8, 12, tzinfo=UTC)
+        cut_off = (
+            '{"envelope_version": "1.0", "message_id": "m1", "vendor_id": "gtk", '
+            '"contract": "gtk.telemetry.v1", "received_at": "'
+        )
+        bronze = spark.createDataFrame(
+            [(cut_off, "k", 0, 1, t, t), ("vendor=ats;garbage", "k", 0, 2, t, t)],
+            "raw_payload string, partition_key string, kafka_partition int, kafka_offset long, "
+            "eventhub_enqueued_at timestamp, ingested_at timestamp",
+        )
+        rejected = parse_envelope(bronze, ["gtk", "ats"]).filter("parse_error IS NOT NULL")
+        parse = rejected.select("vendor_id", "eventhub_enqueued_at")
+        empty = spark.createDataFrame([], "vendor_id string, eventhub_enqueued_at timestamp")
+
+        rows = vendor_data_quality(bronze, empty, [parse, empty], [empty]).collect()
+
+        assert sum(r["messages_received"] for r in rows) == 2
+        for r in rows:
+            assert r["messages_received"] == r["messages_quarantined"], r["vendor_id"]
