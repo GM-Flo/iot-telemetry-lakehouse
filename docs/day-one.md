@@ -1,196 +1,74 @@
-# Day One: Environment Verification
+# Day One: Azure for Students Checks
 
-This project targets an **Azure for Students** subscription (`MS-AZR-0170P`, $100 credit,
-no credit card). That subscription type imposes restrictions that change the architecture,
-and none of them can be determined from documentation alone. Run these six checks before
-writing pipeline code.
+This project was built on an **Azure for Students** subscription: $100 of credit, no credit
+card, no quota increases. That kind of subscription restricts regions, VM families and
+identity, and documentation alone does not say how far. These six checks were run before any
+pipeline code was written, because their answers decide the architecture.
 
-Record the result of each one in the table at the bottom. The answers decide which
-compute path the project takes.
+Run them again before building this on another restricted subscription.
 
----
+## Results
 
-## Why this file exists
+| # | Check | Result | What it changed |
+|---|---|---|---|
+| 1 | Which regions the subscription's policy allows | `uaenorth` permitted; the usual US regions were not | Every resource is in `uaenorth`, set through `location` in `terraform.tfvars` |
+| 2 | vCPU quota for a VM family Databricks can use | 4 vCPUs for the D-series family | One `Standard_D4ds_v4` single-node cluster at a time ([ADR-024](DECISIONS.md#adr-024-single-node-clusters-one-at-a-time)) |
+| 3 | Does a Databricks workspace deploy | Yes, Premium tier | Unity Catalog, row filters and Lakeflow are all available |
+| 4 | Which compute starts: classic cluster, serverless SQL warehouse, serverless notebooks | All three | Classic job clusters for the pipelines, the serverless warehouse for dashboards, serverless for the one-off setup job |
+| 5 | Is there a Unity Catalog metastore in the region | Yes, provisioned with the workspace | Catalogs per environment, lineage, row filters and column masks |
+| 6 | Can the account create an Entra ID app registration | **No**: the university tenant blocks it | Terraform runs from Azure Cloud Shell; CI/CD uses a Databricks-managed service principal with OAuth instead of an Entra one ([ADR-017](DECISIONS.md#adr-017-a-databricks-managed-service-principal-owns-prod)) |
 
-Azure for Students is **not** a smaller Azure Free Trial. The differences that matter here:
+## How to run each check
 
-| | Free Trial | Azure for Students |
-|---|---|---|
-| Credit | $200 / 30 days | $100 / 12 months |
-| Credit card | Required | Not required |
-| Upgrade to Pay-As-You-Go | Supported, keeps remaining credit | Loses student benefits |
-| vCPU quota | 4, no increases | 4, no increases |
-| Region allowlist policy | No | **Yes** |
-| VM SKU restrictions | Minimal | **Steered to B-series** |
-
-The last two rows are the problem. Databricks classic clusters run on D/E/F-series node
-types. It does not offer B-series. So even a single-node cluster that fits inside 4 vCPUs
-can fail with `SkuNotAvailable` rather than a quota error.
-
-Published reports on this are contradictory: some say Azure for Students cannot create a
-Databricks workspace at all because DBUs require Pay-As-You-Go billing, while others show
-a workspace deploying successfully but exposing only SQL Warehouses in the Compute menu,
-with no all-purpose Spark cluster option. Both outcomes are plausible. Check 3 settles it
-for your subscription.
-
----
-
-## Check 1 — Allowed regions
-
-Azure for Students applies an "Allowed resource deployment regions" policy. Students
-sometimes see a policy whose permitted regions do not overlap the regions offered in the
-portal's VM creation blade.
+### 1. Allowed regions
 
 ```bash
-az login
-az account show --query "{name:name, id:id, type:user.type}" -o table
-
-az policy assignment list \
-  --query "[].{name:displayName, policy:policyDefinitionId}" -o table
-
-az account list-locations --query "[].name" -o tsv | sort
+az policy assignment list --query "[].{name:displayName, policy:policyDefinitionId}" -o table
 ```
 
-**Pass:** `eastus` appears, or you identify a permitted alternative.
-**If it fails:** set `location` in `terraform.tfvars` to a region the policy permits.
-Latency is irrelevant for this project; quota and policy availability are the only criteria.
+Open the "Allowed resource deployment regions" assignment and read its parameter list. Pick a
+permitted region; latency does not matter for this project, availability and quota do.
 
----
+### 2. vCPU quota per family
 
-## Check 2 — vCPU quota, per family
-
-Total regional cores being ≥ 4 is not sufficient. The specific VM family quota must also
-be non-zero, and Databricks needs a D/E/F-series family.
+Total regional cores are not enough: the specific family must have quota, and Databricks runs
+on D, E and F series, not the B series student subscriptions are steered towards.
 
 ```bash
-az vm list-usage --location eastus -o table | grep -Ei "total regional|DSv[2-5]|Dv[3-5]|Esv|Fsv"
+az vm list-usage --location <region> -o table | grep -Ei "total regional|Dv[3-5]|Ddsv|Esv|Fsv"
 ```
 
-**Pass:** `Standard DSv3 Family vCPUs` (or DSv2/Dv3) shows a limit ≥ 4.
-**If it shows 0:** that family cannot start a VM at all. Databricks classic compute is out,
-and the project depends entirely on serverless (Check 4) or a non-Databricks fallback.
+Do not file a quota increase request: student subscriptions are not eligible.
 
-Do **not** file a quota increase request. Free, student and sponsored subscriptions are not
-eligible, and the request will be closed.
-
----
-
-## Check 3 — Does the Databricks workspace deploy? (the gating unknown)
-
-Terraform answers this faster than the portal, and leaves you with real infrastructure
-either way.
+### 3. Workspace deployment
 
 ```bash
 cd infra
-cp terraform.tfvars.example terraform.tfvars
-# edit subscription_id, location, budget_alert_emails; leave deploy_databricks = false
-
-terraform init
-terraform validate
-terraform apply
+cp terraform.tfvars.example terraform.tfvars    # deploy_databricks = false
+terraform init && terraform apply                # storage, Event Hubs, budget: no vCPUs used
+terraform apply -var="deploy_databricks=true"    # then the workspace on its own
 ```
 
-That first apply creates storage, containers, Event Hubs and the budget — all PaaS, zero
-vCPU footprint. It will succeed on a student subscription.
+`SubscriptionNotRegistered` is fixed with
+`az provider register --namespace Microsoft.Databricks`; a billing or offer error is not.
 
-Then flip the flag and try the workspace on its own:
+### 4. Compute
 
-```bash
-terraform apply -var="deploy_databricks=true"
-```
+Open the workspace from the Azure portal with the identity that created it, which makes it
+workspace admin. Then try, in turn: a single-node cluster with a 10-minute auto-termination,
+a serverless SQL warehouse, and `spark.range(5).count()` on serverless notebook compute.
 
-**Pass:** apply completes and `databricks_workspace_url` is populated.
-**If it fails:** capture the exact ARM error code. `SubscriptionNotRegistered` is fixable
-with `az provider register --namespace Microsoft.Databricks`. A billing or offer-restriction
-error is not fixable and means the fallback decision in the README applies.
+### 5. Unity Catalog
 
----
+Catalog → check that the workspace has a metastore attached. New workspaces in most regions
+get one automatically. Without it the project would fall back to `hive_metastore` and lose
+lineage, row filters and column masks.
 
-## Check 4 — Does any compute start?
-
-Serverless runs in Databricks' own subscription, so it bypasses your regional core quota
-entirely. This single answer decides roughly a third of the architecture.
-
-Open the workspace from the Azure portal **using the identity that created it** — portal
-launch is what assigns workspace admin. Then:
-
-1. `Settings → Identity and access → Users → your account`. Confirm **Admin access**, or
-   **Workspace access** plus **Allow unrestricted cluster creation**. If only SQL Warehouses
-   appear in Compute, missing entitlements are the more likely cause than an offer
-   restriction — sign out and back in after fixing them.
-2. `Compute → Create compute`. Single node, smallest available node type, autotermination
-   **10 minutes**. Try to start it.
-3. `SQL Warehouses → Create`. Choose **Serverless**. Try to start it.
-4. `Compute → Serverless` notebook attach. Try to run `spark.range(5).count()`.
-
-**Record which of the three started.** If serverless works and classic does not, the project
-runs serverless-only: use Lakeflow Declarative Pipelines for silver/gold and skip the
-hand-rolled checkpoint work, since serverless manages it.
-
-> Trial accounts registered with personal email addresses can face limited scaling of
-> serverless resources. If you have a university or custom-domain address, prefer it.
-
----
-
-## Check 5 — Unity Catalog metastore
-
-Creating a metastore needs Databricks **account admin**. If you signed up with a personal
-email you are the admin. On a university tenant where you are not, this is blocked.
-
-Go to the Databricks **account console** (`accounts.azuredatabricks.net`) →
-`Catalog`. Newly created workspaces are usually Unity Catalog enabled by default with a
-metastore pre-provisioned in the region.
-
-**Pass:** a metastore exists in your workspace's region.
-**If it fails:** the project falls back to `hive_metastore` with `abfss://` paths. You lose
-column-level lineage, which is the single most valuable screenshot in the README — so retry
-this before giving up on it.
-
-Either way: **never use `dbutils.fs.mount()` or `/mnt/` paths.** Mounts are the clearest
-signal of a dated project. Use `abfss://` URIs directly, which the `abfss_paths` Terraform
-output gives you.
-
----
-
-## Check 6 — Entra app registration
-
-Needed for the Terraform service principal and GitHub Actions OIDC. Many tenants restrict
-app registration to administrators.
+### 6. App registration
 
 ```bash
 az ad app create --display-name "iot-lakehouse-cicd" --query appId -o tsv
 ```
 
-**Pass:** an application ID comes back.
-**If it fails** with an authorization error: CI/CD authenticates with a Databricks personal
-access token in a GitHub secret instead of OIDC. This is a real downgrade — "no credentials
-in the repo" is a selling point — so note it in the README rather than hiding it.
-
----
-
-## Record your results
-
-| # | Check | Result | Notes |
-|---|-------|--------|-------|
-| 1 | `eastus` permitted by policy | ⬜ | |
-| 2 | D/E/F-series family quota ≥ 4 | ⬜ | |
-| 3 | Databricks workspace deploys | ⬜ | ARM error code if not: |
-| 4a | Classic single-node cluster starts | ⬜ | |
-| 4b | Serverless SQL Warehouse starts | ⬜ | |
-| 4c | Serverless notebook compute runs | ⬜ | |
-| 5 | Unity Catalog metastore exists | ⬜ | |
-| 6 | Entra app registration permitted | ⬜ | |
-
----
-
-## What each outcome means
-
-| Checks 4a / 4c | Path |
-|---|---|
-| Both work | Full architecture as designed. Hand-roll bronze on classic, Lakeflow pipelines for silver/gold. |
-| Serverless only | Serverless-only build. Lakeflow pipelines throughout. You lose the checkpoint/watermark internals that streaming interviews probe, so compensate by covering them in the README. |
-| Neither works | Databricks is out on this subscription. Event Hubs, ADLS Gen2, Delta, the medallion layers, the transform tests and the CI/CD half all survive — run Spark locally in Docker against the same Event Hubs Kafka endpoint and the same `abfss://` storage. Unity Catalog lineage is the only real casualty. |
-
-Everything in `src/`, `tests/` and `.github/` is independent of this outcome. That is
-deliberate — it is also the half that most clearly demonstrates engineering practice, so it
-gets built first regardless of what the portal says.
+An authorization error means the tenant restricts app registrations; use a
+Databricks-managed service principal for CI/CD, as this project does.

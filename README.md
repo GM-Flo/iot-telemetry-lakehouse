@@ -236,6 +236,7 @@ principal and teardown: [docs/OPERATIONS.md](docs/OPERATIONS.md).
 | [COSTS.md](docs/COSTS.md) | What it cost on a $100 student subscription, and why |
 | [LIMITATIONS.md](docs/LIMITATIONS.md) | Known limits and how the design would scale |
 | [CONVENTIONS.md](docs/CONVENTIONS.md) | Naming and tagging rules |
+| [DAY-ONE.md](docs/DAY-ONE.md) | The subscription checks run before building, and what they changed |
 | [EVIDENCE.md](docs/EVIDENCE.md) | Screenshots and query results from the production run |
 
 ## Constraints this was built under
@@ -249,3 +250,7 @@ Databricks-managed service principal for CI/CD. Each is recorded in
 
 The Azure resources were destroyed after the project was complete; the screenshots and
 query results in [EVIDENCE.md](docs/EVIDENCE.md) are from the live production run.
+
+## Author
+
+**Saif Ali Rabbani**. Licensed under the [MIT License](LICENSE).
