@@ -51,13 +51,9 @@ silver update.
 ![CI/CD run](images/cicd-green-run.png)
 Lint, tests and bundle validation, then the deploy started by hand on `main`.
 
-### Production is read-only for people
-![Prod permissions](images/prod-read-only.png)
-Run as and owned by the service principal; the `users` group can only view.
-
-### Row filter and VIN mask
-![Row filter](images/row-filter-demo.png)
-A user mapped only to C001: six vehicles, VINs masked to their last four characters.
+### Production belongs to the service principal
+The refresh job screenshot above shows it: created by and run as `iot-lakehouse-cicd`. The
+`users` group can only view prod resources.
 
 ## Query results
 
