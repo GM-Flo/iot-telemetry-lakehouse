@@ -1,12 +1,13 @@
-"""Tests for bronze file ingestion helpers."""
+"""Tests for the bronze ingestion helpers: the telemetry stream and registry files."""
 
 from __future__ import annotations
 
 from datetime import date, datetime
 
 import pytest
+from pyspark.sql import functions as F
 
-from src.iot.bronze import to_registry_bronze
+from src.iot.bronze import to_bronze, to_registry_bronze
 
 LANDING = "dbfs:/Volumes/iot_dev/bronze/landing/registry"
 
@@ -57,3 +58,21 @@ class TestRegistryBronze:
         assert row["raw_content"] == '{"vendors": []}'
         assert row["source_file_path"].endswith("fleet_registry_2026-11-07.json")
         assert row["ingested_at"] is not None
+
+
+class TestTelemetryBronze:
+    def test_bronze_keeps_payload_opaque(self, spark):
+        """Bronze must not parse. Replayability depends on it."""
+        kafka_like = spark.createDataFrame(
+            [(b'{"vin":"AAA"}', b"key1", "vehicle-telemetry", 0, 42)],
+            "value binary, key binary, topic string, partition int, offset long",
+        ).withColumn("timestamp", F.current_timestamp())
+
+        bronze = to_bronze(kafka_like)
+        row = bronze.collect()[0]
+
+        assert row["raw_payload"] == '{"vin":"AAA"}'
+        assert row["partition_key"] == "key1"
+        assert row["kafka_offset"] == 42
+        assert row["ingested_at"] is not None
+        assert "vin" not in bronze.columns

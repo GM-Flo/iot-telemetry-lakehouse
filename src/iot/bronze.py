@@ -1,4 +1,4 @@
-"""Bronze transformations for file-based sources.
+"""Bronze transformations for the telemetry stream and file-based sources.
 
 Bronze stores data as received. These functions only add the metadata needed
 to trace and order what arrived; they never parse the content itself.
@@ -10,6 +10,24 @@ from pyspark.sql import Column, DataFrame
 from pyspark.sql import functions as F
 
 REGISTRY_FILE_PATTERN = r"fleet_registry_(\d{4}-\d{2}-\d{2})\.json$"
+
+
+def to_bronze(df: DataFrame) -> DataFrame:
+    """Shape a raw Kafka source into the raw_telemetry_messages contract.
+
+    Bronze never parses. It keeps the payload as an opaque string alongside
+    Kafka coordinates and an ingestion timestamp, which makes the layer
+    replayable: a parser fix is a silver rebuild, not a re-ingest.
+    """
+    return df.select(
+        F.col("value").cast("string").alias("raw_payload"),
+        F.col("key").cast("string").alias("partition_key"),
+        F.col("topic").alias("source_topic"),
+        F.col("partition").alias("kafka_partition"),
+        F.col("offset").alias("kafka_offset"),
+        F.col("timestamp").alias("eventhub_enqueued_at"),
+        F.current_timestamp().alias("ingested_at"),
+    )
 
 
 def snapshot_date_from_path(path: Column) -> Column:

@@ -19,20 +19,23 @@ import sys
 # Bundle deploys the repo as files; notebooks run from <root>/notebooks.
 sys.path.append(os.path.abspath(".."))
 
+from src.iot.bronze import to_bronze  # noqa: E402
 from src.iot.config import bronze_paths, kafka_source_options  # noqa: E402
-from src.iot.transforms import to_bronze  # noqa: E402
 
 # COMMAND ----------
 
-dbutils.widgets.text("catalog", "iot_dev", "Catalog")
+dbutils.widgets.text("catalog", "", "Catalog")
 dbutils.widgets.text("secret_scope", "iot", "Secret scope")
-dbutils.widgets.text("secret_key", "eventhub-listen-conn-dev", "Secret key")
+dbutils.widgets.text("secret_key", "", "Secret key")
 dbutils.widgets.text("max_offsets_per_trigger", "10000", "Max offsets per batch")
 
 catalog = dbutils.widgets.get("catalog")
 secret_scope = dbutils.widgets.get("secret_scope")
 secret_key = dbutils.widgets.get("secret_key")
 max_offsets = int(dbutils.widgets.get("max_offsets_per_trigger"))
+
+if not catalog or not secret_key:
+    raise ValueError("Fill in the catalog and secret_key widgets; the bundle passes both.")
 
 paths = bronze_paths(catalog)
 conn = dbutils.secrets.get(secret_scope, secret_key)

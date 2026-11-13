@@ -11,7 +11,7 @@ fleet company.
 ![Databricks](https://img.shields.io/badge/Databricks-Lakeflow%20%7C%20Unity%20Catalog-FF3621)
 ![Azure](https://img.shields.io/badge/Azure-Event%20Hubs%20%7C%20ADLS%20Gen2-0078D4)
 ![Terraform](https://img.shields.io/badge/IaC-Terraform-7B42BC)
-![Tests](https://img.shields.io/badge/tests-449-brightgreen)
+![Tests](https://img.shields.io/badge/tests-416-brightgreen)
 
 ---
 
@@ -105,7 +105,7 @@ devices, all four vendors.
 | **Lost readings** | **0** |
 | **Invented readings** | **0** |
 | **Conflicting duplicates found** | 321 (two readings claiming the same device and second) |
-| **Test suite** | 449 tests, fast set on every push, full suite on `main` |
+| **Test suite** | 416 tests, fast set on every push, full suite on `main` |
 
 What the platform caught on its own, with no code written for those cases:
 
@@ -185,7 +185,7 @@ More evidence, including the reconciliation and late-registration queries:
 ├── contracts/             JSON Schema contract per vendor format version
 ├── reference/             Mappings, validity limits, thresholds, fault codes
 ├── dashboards/            Dashboard SQL and the generated Lakeview files
-├── tests/                 449 pytest tests against local Spark
+├── tests/                 416 pytest tests against local Spark
 ├── docs/                  Architecture, decisions, data quality, security, operations
 └── .github/workflows/     CI/CD
 ```

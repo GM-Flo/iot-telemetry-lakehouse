@@ -18,8 +18,11 @@ Azure Cost analysis, grouped by meter, for the whole build up to the first produ
 | Storage | 0.11 | 0% |
 | **Total** | **41.94** | |
 
-The production backfill, the live runs and about four refresh runs came after that date; the
-final figure for the whole project is in [EVIDENCE.md](EVIDENCE.md#azure-cost).
+**The whole project, from the first `terraform apply` to the end of the production runs,
+cost $75.62 of the $100 credit.** The second half of that, about $34, covered the 7-day
+production backfill, live runs, several refresh and rebuild runs, and the workspace, network
+and Event Hubs charges that run by the hour. The screenshot is in
+[EVIDENCE.md](EVIDENCE.md#azure-cost).
 
 ## What drove the cost
 
@@ -38,7 +41,7 @@ final figure for the whole project is in [EVIDENCE.md](EVIDENCE.md#azure-cost).
 | Single-node `Standard_D4ds_v4` clusters, Photon off | The smallest compute that runs Unity Catalog pipelines |
 | Job clusters only, no all-purpose cluster | Nothing runs between jobs |
 | `pipelines.clusterShutdown.delay: 60s` | Pipeline clusters stop a minute after an update, not after the default |
-| Local Spark for 449 tests | Development and CI run no Databricks compute |
+| Local Spark for 416 tests | Development and CI run no Databricks compute |
 | A subscription budget with alerts, in Terraform | Early warning before the credit runs out |
 | Tear down after the project | Stops the hourly network and Event Hubs charges |
 

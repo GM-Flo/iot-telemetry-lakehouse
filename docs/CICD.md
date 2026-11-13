@@ -24,14 +24,14 @@ flowchart LR
 
 ## Test strategy
 
-449 tests run against local Spark: pure functions in `src/iot/` take DataFrames and return
+416 tests run against local Spark: pure functions in `src/iot/` take DataFrames and return
 DataFrames, so every rule is tested without a cluster. The three slowest modules (events,
 gold facts and the end-to-end silver chain) are marked `slow`:
 
 | Set | Tests | Runs on |
 |---|---|---|
-| Fast, `pytest -m "not slow"` | 357 | Every push and pull request |
-| Full, `pytest` | 449 | Every push to `main` |
+| Fast, `pytest -m "not slow"` | 320 | Every push and pull request |
+| Full, `pytest` | 416 | Every push to `main` |
 
 Locally on Windows, Spark cannot reuse its Python worker processes, which makes the suite
 many times slower than on Linux. Run the module you changed locally and let CI run the rest.

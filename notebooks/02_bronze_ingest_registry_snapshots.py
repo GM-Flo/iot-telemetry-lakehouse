@@ -20,8 +20,10 @@ from src.iot.bronze import to_registry_bronze  # noqa: E402
 
 # COMMAND ----------
 
-dbutils.widgets.text("catalog", "iot_dev", "Catalog")
+dbutils.widgets.text("catalog", "", "Catalog")
 catalog = dbutils.widgets.get("catalog")
+if not catalog:
+    raise ValueError("Fill in the catalog widget; the bundle passes it.")
 
 landing_path = f"/Volumes/{catalog}/bronze/landing/registry"
 table = f"{catalog}.bronze.raw_registry_snapshots"

@@ -351,7 +351,7 @@ across runs.
 
 ## ADR-021: Fast tests on every push, the full suite on main
 
-**Context.** The suite runs on local Spark; 92 of 449 tests take most of the time.
+**Context.** The suite runs on local Spark; 96 of 416 tests take most of the time.
 
 **Decision.** The three slowest modules are marked `slow`. Pushes and pull requests run the
 rest; `main` runs everything.
