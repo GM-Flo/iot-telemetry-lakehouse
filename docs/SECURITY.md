@@ -95,8 +95,10 @@ by Databricks.
 
 ## 6. Before the repository is made public
 
-- [ ] Rotate the Event Hubs and storage account keys, or destroy the platform, which removes them.
-- [ ] Remove the Azure subscription ID from the git history.
-- [ ] Scan the full history for secrets.
-- [ ] Confirm no resource name is hardcoded in a default; all come from variables, widgets or lookups.
+- [x] Rotate the Event Hubs and storage account keys, or destroy the platform, which removes them.
+  The platform was destroyed with `terraform destroy`; every key and connection string went with it.
+- [x] Remove the Azure subscription ID from the git history. `git filter-repo --replace-text`
+  replaced it, and the storage account name, in every commit.
+- [x] Scan the full history for secrets. `gitleaks` found no leaks.
+- [x] Confirm no resource name is hardcoded in a default; all come from variables, widgets or lookups.
 - [ ] Turn on branch protection for `main` and required reviewers on the `prod` environment.

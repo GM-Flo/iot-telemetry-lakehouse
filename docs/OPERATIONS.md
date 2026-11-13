@@ -157,9 +157,14 @@ throughput unit are billed by the hour whether or not data flows.
 ## 10. Tear down
 
 1. Capture anything still needed: screenshots, query results.
-2. Cloud Shell: `cd infra && terraform destroy`.
-3. Azure portal: confirm the resource groups are gone, including the workspace's managed
-   resource group.
+2. From the folder that holds `terraform.tfstate`: `terraform plan -destroy -out destroy.tfplan`,
+   check the list, then `terraform apply destroy.tfplan`. The state is local, so keep a copy
+   until the teardown is confirmed; Cloud Shell without a file share loses it when the session ends.
+3. `az group list -o table`: the project resource group and the workspace's managed resource
+   group should both be gone. If the managed group remains with only its root storage account,
+   the Unity Catalog access connector and an Event Grid topic, and
+   `az resource list --resource-type Microsoft.Databricks/workspaces` is empty, delete it with
+   `az group delete --name <managed resource group>`.
 4. GitHub: delete `DATABRICKS_HOST` and the two secrets. `validate` and `deploy-prod` then skip
    themselves; lint and tests keep running.
 5. Azure Cost analysis, a day or two later: confirm the daily cost has dropped to zero.
