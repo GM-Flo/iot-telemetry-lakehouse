@@ -101,4 +101,6 @@ by Databricks.
   replaced it, and the storage account name, in every commit.
 - [x] Scan the full history for secrets. `gitleaks` found no leaks.
 - [x] Confirm no resource name is hardcoded in a default; all come from variables, widgets or lookups.
-- [ ] Turn on branch protection for `main` and required reviewers on the `prod` environment.
+- [x] Turn on branch protection for `main` and required reviewers on the `prod` environment.
+  A ruleset blocks force pushes and deletion of `main` and requires a pull request with `lint`
+  and `test` passing; `prod` deployments wait for a reviewer's approval.

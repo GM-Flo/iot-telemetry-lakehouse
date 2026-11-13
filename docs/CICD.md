@@ -38,14 +38,21 @@ many times slower than on Linux. Run the module you changed locally and let CI r
 
 ## Deploying production
 
-1. Merge to `main`. CI runs the full suite and validates both targets.
-2. In GitHub, **Actions → CI/CD → Run workflow → `main`**.
-3. `deploy-prod` deploys as the service principal `iot-lakehouse-cicd`, which then owns every
-   prod job, pipeline and dashboard.
+1. Open a pull request to `main`. It can merge only when `lint` and `test` pass.
+2. After the merge, CI runs the full suite and validates both targets.
+3. In GitHub, **Actions → CI/CD → Run workflow → `main`**.
+4. `deploy-prod` waits for a reviewer to approve the `prod` deployment, then deploys as the
+   service principal `iot-lakehouse-cicd`, which owns every prod job, pipeline and dashboard.
 
-The `prod` GitHub environment accepts deployments from `main` only. Required reviewers on the
-environment, which need a paid plan for private repositories, are enabled once the repository
-is public.
+## Repository protection
+
+| Control | Setting |
+|---|---|
+| `main` ruleset | Force pushes and deletion blocked; changes only through a pull request with `lint` and `test` passing |
+| `prod` environment | Deployments from `main` only, each approved by a required reviewer |
+
+On a private repository required reviewers need a paid plan, so they were turned on when the
+repository was made public. During the build, `deploy-prod` ran only when started by hand.
 
 Dev is not deployed by CI. A bundle in development mode belongs to the person deploying it, so
 a CI deploy would create a second, service-principal-owned copy instead of updating the
